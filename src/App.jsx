@@ -1,23 +1,34 @@
 // src/App.jsx
 
-import JSZip from "jszip";
-import JsBarcode from "jsbarcode";
 import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import JSZip from "jszip";
+import JsBarcode from "jsbarcode";
 import "./App.css";
-import BarcodeScanner from "./components/BarcodeScanner";
 import BarcodeGenerator from "./components/BarcodeGenerator";
+import BarcodeScanner from "./components/BarcodeScanner";
+import Login from "./components/Login";
+import MfaEnroll from "./components/MfaEnroll";
+import MfaVerify from "./components/MfaVerify";
 import {
   createInventoryItem,
   createInventoryItems,
   deleteInventoryItem,
+  deleteInventoryItemImage,
   fetchInventoryItems,
   updateInventoryItem,
+  updateInventoryItemImage,
 } from "./lib/inventory";
+import {
+  deleteInventoryImage,
+  uploadInventoryImage,
+} from "./lib/inventoryImages";
+import { supabase } from "./lib/supabaseClient";
 
 const STORAGE_KEY = "925-jewellery-inventory";
 const MIGRATION_KEY = "925-jewellery-supabase-migrated";
@@ -32,6 +43,10 @@ const emptyForm = {
   costPrice: "",
   sellingPrice: "",
   notes: "",
+  imageFile: null,
+  imagePreview: "",
+  imageUrl: "",
+  imagePath: "",
 };
 
 const categories = [
@@ -75,8 +90,10 @@ function levenshteinDistance(first, second) {
     const currentRow = [i];
 
     for (let j = 1; j <= b.length; j += 1) {
-      const insertionCost = currentRow[j - 1] + 1;
-      const deletionCost = previousRow[j] + 1;
+      const insertionCost =
+        currentRow[j - 1] + 1;
+      const deletionCost =
+        previousRow[j] + 1;
       const replacementCost =
         previousRow[j - 1] +
         (a[i - 1] === b[j - 1] ? 0 : 1);
@@ -108,9 +125,14 @@ function getAllowedTypoDistance(word) {
   return 2;
 }
 
-function wordMatchesSearch(searchWord, inventoryWord) {
+function wordMatchesSearch(
+  searchWord,
+  inventoryWord,
+) {
   const search = normalizeText(searchWord);
-  const inventory = normalizeText(inventoryWord);
+  const inventory = normalizeText(
+    inventoryWord,
+  );
 
   if (!search || !inventory) {
     return false;
@@ -123,26 +145,33 @@ function wordMatchesSearch(searchWord, inventoryWord) {
     return true;
   }
 
-  const allowedDistance = getAllowedTypoDistance(search);
+  const allowedDistance =
+    getAllowedTypoDistance(search);
 
   if (allowedDistance === 0) {
     return false;
   }
 
   if (
-    Math.abs(search.length - inventory.length) >
-    allowedDistance
+    Math.abs(
+      search.length - inventory.length,
+    ) > allowedDistance
   ) {
     return false;
   }
 
   return (
-    levenshteinDistance(search, inventory) <=
-    allowedDistance
+    levenshteinDistance(
+      search,
+      inventory,
+    ) <= allowedDistance
   );
 }
 
-function itemMatchesSearch(item, searchTerm) {
+function itemMatchesSearch(
+  item,
+  searchTerm,
+) {
   const search = normalizeText(searchTerm);
 
   if (!search) {
@@ -157,39 +186,45 @@ function itemMatchesSearch(item, searchTerm) {
     item.notes,
   ];
 
-  const searchableWords = searchableFields
-    .flatMap((field) =>
-      normalizeText(field)
-        .split(/[\s\-_/.,]+/)
-        .filter(Boolean),
+  const searchableWords =
+    searchableFields.flatMap(
+      (field) =>
+        normalizeText(field)
+          .split(/[\s\-_/.,]+/)
+          .filter(Boolean),
     );
 
   const searchWords = search
     .split(/[\s\-_/.,]+/)
     .filter(Boolean);
 
-  return searchWords.every((searchWord) =>
-    searchableWords.some((inventoryWord) =>
-      wordMatchesSearch(searchWord, inventoryWord),
-    ),
+  return searchWords.every(
+    (searchWord) =>
+      searchableWords.some(
+        (inventoryWord) =>
+          wordMatchesSearch(
+            searchWord,
+            inventoryWord,
+          ),
+      ),
   );
 }
 
 function readLocalItems() {
   try {
-    const savedItems = localStorage.getItem(STORAGE_KEY);
+    const savedItems =
+      localStorage.getItem(STORAGE_KEY);
 
     if (!savedItems) {
       return [];
     }
 
-    const parsedItems = JSON.parse(savedItems);
+    const parsedItems =
+      JSON.parse(savedItems);
 
-    if (!Array.isArray(parsedItems)) {
-      return [];
-    }
-
-    return parsedItems;
+    return Array.isArray(parsedItems)
+      ? parsedItems
+      : [];
   } catch {
     return [];
   }
@@ -199,26 +234,56 @@ function getFormFromItem(item) {
   return {
     name: String(item.name ?? ""),
     sku: String(item.sku ?? ""),
-    category: String(item.category ?? "Ring"),
-    material: String(item.material ?? "925 Silver"),
-    quantity: String(item.quantity ?? 1),
-    weight: String(item.weight ?? ""),
-    costPrice: String(item.costPrice ?? ""),
-    sellingPrice: String(item.sellingPrice ?? ""),
+    category: String(
+      item.category ?? "Ring",
+    ),
+    material: String(
+      item.material ?? "925 Silver",
+    ),
+    quantity: String(
+      item.quantity ?? 1,
+    ),
+    weight: String(
+      item.weight ?? "",
+    ),
+    costPrice: String(
+      item.costPrice ?? "",
+    ),
+    sellingPrice: String(
+      item.sellingPrice ?? "",
+    ),
     notes: String(item.notes ?? ""),
+    imageFile: null,
+    imagePreview: String(
+      item.imageUrl ?? "",
+    ),
+    imageUrl: String(
+      item.imageUrl ?? "",
+    ),
+    imagePath: String(
+      item.imagePath ?? "",
+    ),
   };
 }
 
 function getErrorMessage(error) {
-  return error?.message || "Something went wrong.";
+  return (
+    error?.message ||
+    "Something went wrong."
+  );
 }
 
 function getSafeFileName(value) {
   return (
     String(value || "label")
       .trim()
-      .replace(/[^a-zA-Z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "label"
+      .replace(
+        /[^a-zA-Z0-9_-]+/g,
+        "-",
+      )
+      .replace(
+        /^-+|-+$/g,
+        "") || "label"
   );
 }
 
@@ -237,179 +302,209 @@ function drawCenteredText(
 }
 
 function createLabelPng(item) {
-  return new Promise((resolve, reject) => {
-    const sku = String(item?.sku ?? "").trim();
+  return new Promise(
+    (resolve, reject) => {
+      const sku = String(
+        item?.sku ?? "",
+      ).trim();
 
-    if (!sku) {
-      reject(
-        new Error(
-          `Item "${item?.name || "Unknown item"}" does not have an SKU.`,
-        ),
-      );
-      return;
-    }
-
-    try {
-      const barcodeCanvas =
-        document.createElement("canvas");
-
-      JsBarcode(barcodeCanvas, sku, {
-        format: "CODE128",
-        width: 4,
-        height: 110,
-        displayValue: true,
-        text: sku,
-        fontSize: 20,
-        font: "Arial",
-        textMargin: 8,
-        margin: 10,
-        background: "#ffffff",
-        lineColor: "#252525",
-      });
-
-      const scale = 3;
-
-      const labelWidth = 700;
-      const labelHeight = 450;
-
-      const canvas =
-        document.createElement("canvas");
-
-      canvas.width = labelWidth * scale;
-      canvas.height = labelHeight * scale;
-
-      const context = canvas.getContext("2d");
-
-      if (!context) {
+      if (!sku) {
         reject(
           new Error(
-            "Unable to create label image.",
+            `Item "${item?.name || "Unknown item"}" does not have an SKU.`,
           ),
         );
         return;
       }
 
-      context.scale(scale, scale);
+      try {
+        const barcodeCanvas =
+          document.createElement(
+            "canvas",
+          );
 
-      context.fillStyle = "#ffffff";
+        JsBarcode(
+          barcodeCanvas,
+          sku,
+          {
+            format: "CODE128",
+            width: 4,
+            height: 110,
+            displayValue: true,
+            text: sku,
+            fontSize: 20,
+            font: "Arial",
+            textMargin: 8,
+            margin: 10,
+            background: "#ffffff",
+            lineColor: "#252525",
+          },
+        );
 
-      context.fillRect(
-        0,
-        0,
-        labelWidth,
-        labelHeight,
-      );
+        const scale = 3;
+        const labelWidth = 700;
+        const labelHeight = 450;
 
-      context.strokeStyle = "#e3ded8";
-      context.lineWidth = 2;
+        const canvas =
+          document.createElement(
+            "canvas",
+          );
 
-      context.strokeRect(
-        1,
-        1,
-        labelWidth - 2,
-        labelHeight - 2,
-      );
+        canvas.width =
+          labelWidth * scale;
+        canvas.height =
+          labelHeight * scale;
 
-      drawCenteredText(
-        context,
-        "925 JEWELLERY",
-        labelWidth / 2,
-        32,
-        "700 20px Arial",
-      );
+        const context =
+          canvas.getContext("2d");
 
-      drawCenteredText(
-        context,
-        item.name || "Jewellery Item",
-        labelWidth / 2,
-        68,
-        "700 28px Arial",
-      );
+        if (!context) {
+          reject(
+            new Error(
+              "Unable to create label image.",
+            ),
+          );
+          return;
+        }
 
-      const category =
-        item.category || "Other";
+        context.scale(
+          scale,
+          scale,
+        );
 
-      const weight =
-        item.weight !== "" &&
-        item.weight !== null &&
-        item.weight !== undefined
-          ? `${Number(item.weight).toFixed(3)} g`
-          : "—";
+        context.fillStyle =
+          "#ffffff";
+        context.fillRect(
+          0,
+          0,
+          labelWidth,
+          labelHeight,
+        );
 
-      drawCenteredText(
-        context,
-        `Category: ${category}    •    Weight: ${weight}`,
-        labelWidth / 2,
-        100,
-        "600 17px Arial",
-      );
+        context.strokeStyle =
+          "#e3ded8";
+        context.lineWidth = 2;
 
-      const targetBarcodeWidth = 560;
-      const targetBarcodeHeight = 125;
+        context.strokeRect(
+          1,
+          1,
+          labelWidth - 2,
+          labelHeight - 2,
+        );
 
-      const barcodeX =
-        (labelWidth -
-          targetBarcodeWidth) /
-        2;
+        drawCenteredText(
+          context,
+          "925 JEWELLERY",
+          labelWidth / 2,
+          32,
+          "700 20px Arial",
+        );
 
-      context.drawImage(
-        barcodeCanvas,
-        barcodeX,
-        120,
-        targetBarcodeWidth,
-        targetBarcodeHeight,
-      );
+        drawCenteredText(
+          context,
+          item.name ||
+            "Jewellery Item",
+          labelWidth / 2,
+          68,
+          "700 28px Arial",
+        );
 
-      drawCenteredText(
-        context,
-        `SKU: ${sku}`,
-        labelWidth / 2,
-        270,
-        "700 22px Arial",
-      );
+        const category =
+          item.category ||
+          "Other";
 
-      context.fillStyle = "#8a6d46";
+        const weight =
+          item.weight !== "" &&
+          item.weight !== null &&
+          item.weight !==
+            undefined
+            ? `${Number(
+                item.weight,
+              ).toFixed(3)} g`
+            : "—";
 
-      context.fillRect(
-        60,
-        300,
-        labelWidth - 120,
-        2,
-      );
+        drawCenteredText(
+          context,
+          `Category: ${category}    •    Weight: ${weight}`,
+          labelWidth / 2,
+          100,
+          "600 17px Arial",
+        );
 
-      drawCenteredText(
-        context,
-        "925 Silver",
-        labelWidth / 2,
-        330,
-        "600 17px Arial",
-      );
+        const targetBarcodeWidth =
+          560;
+        const targetBarcodeHeight =
+          125;
 
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            reject(
-              new Error(
-                "Unable to create label image.",
-              ),
-            );
-            return;
-          }
+        const barcodeX =
+          (labelWidth -
+            targetBarcodeWidth) /
+          2;
 
-          resolve(blob);
-        },
-        "image/png",
-      );
-    } catch (labelError) {
-      reject(labelError);
-    }
-  });
+        context.drawImage(
+          barcodeCanvas,
+          barcodeX,
+          120,
+          targetBarcodeWidth,
+          targetBarcodeHeight,
+        );
+
+        drawCenteredText(
+          context,
+          `SKU: ${sku}`,
+          labelWidth / 2,
+          270,
+          "700 22px Arial",
+        );
+
+        context.fillStyle =
+          "#8a6d46";
+
+        context.fillRect(
+          60,
+          300,
+          labelWidth - 120,
+          2,
+        );
+
+        drawCenteredText(
+          context,
+          "925 Silver",
+          labelWidth / 2,
+          330,
+          "600 17px Arial",
+        );
+
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(
+                new Error(
+                  "Unable to create label image.",
+                ),
+              );
+              return;
+            }
+
+            resolve(blob);
+          },
+          "image/png",
+        );
+      } catch (labelError) {
+        reject(labelError);
+      }
+    },
+  );
 }
 
-
-function downloadBlob(blob, fileName) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
+function downloadBlob(
+  blob,
+  fileName,
+) {
+  const url =
+    URL.createObjectURL(blob);
+  const link =
+    document.createElement("a");
 
   link.href = url;
   link.download = fileName;
@@ -423,32 +518,248 @@ function downloadBlob(blob, fileName) {
   }, 1000);
 }
 
+function formatCurrency(value) {
+  return `₹${value.toLocaleString(
+    "en-IN",
+    {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    },
+  )}`;
+}
+
+function formatWeight(value) {
+  if (
+    value === "" ||
+    value === null ||
+    value === undefined
+  ) {
+    return "—";
+  }
+
+  return `${Number(value).toFixed(
+    3,
+  )} g`;
+}
+
 function App() {
-  const [items, setItems] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editingItemId, setEditingItemId] = useState(null);
-  const [form, setForm] = useState(emptyForm);
-  const [error, setError] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("All");
-  const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [scannedItem, setScannedItem] = useState(null);
-  const [barcodeItem, setBarcodeItem] = useState(null);
-
-  const [isLabelSelectionMode, setIsLabelSelectionMode] =
+  const [session, setSession] =
+    useState(null);
+  const [isAuthLoading, setIsAuthLoading] =
+    useState(true);
+  const [isMfaVerified, setIsMfaVerified] =
     useState(false);
+  const [
+    isMfaEnrollmentOpen,
+    setIsMfaEnrollmentOpen,
+  ] = useState(false);
 
-  const [selectedLabelIds, setSelectedLabelIds] =
+  const [items, setItems] =
     useState([]);
-
-  const [isDownloadingLabels, setIsDownloadingLabels] =
+  const [isLoading, setIsLoading] =
+    useState(true);
+  const [isSaving, setIsSaving] =
     useState(false);
+  const [isFormOpen, setIsFormOpen] =
+    useState(false);
+  const [
+    editingItemId,
+    setEditingItemId,
+  ] = useState(null);
+  const [form, setForm] =
+    useState(emptyForm);
+  const [error, setError] =
+    useState("");
+  const [searchTerm, setSearchTerm] =
+    useState("");
+  const [
+    categoryFilter,
+    setCategoryFilter,
+  ] = useState("All");
 
-  const isEditing = editingItemId !== null;
+  const [
+    isScannerOpen,
+    setIsScannerOpen,
+  ] = useState(false);
+  const [
+    scannedItem,
+    setScannedItem,
+  ] = useState(null);
+  const [
+    barcodeItem,
+    setBarcodeItem,
+  ] = useState(null);
+
+  const [
+    isLabelSelectionMode,
+    setIsLabelSelectionMode,
+  ] = useState(false);
+
+  const [
+    selectedLabelIds,
+    setSelectedLabelIds,
+  ] = useState([]);
+
+  const [
+    isDownloadingLabels,
+    setIsDownloadingLabels,
+  ] = useState(false);
+
+  const imageInputRef =
+    useRef(null);
+
+  const isEditing =
+    editingItemId !== null;
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function checkAuthentication() {
+      setIsAuthLoading(true);
+
+      try {
+        const {
+          data: {
+            session:
+              currentSession,
+          },
+        } =
+          await supabase.auth.getSession();
+
+        if (cancelled) {
+          return;
+        }
+
+        setSession(currentSession);
+
+        if (!currentSession) {
+          setIsMfaVerified(false);
+          setIsMfaEnrollmentOpen(
+            false,
+          );
+          return;
+        }
+
+        const {
+          data: assuranceData,
+          error: assuranceError,
+        } =
+          await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+        if (assuranceError) {
+          throw assuranceError;
+        }
+
+        if (!cancelled) {
+          setIsMfaVerified(
+            assuranceData?.currentLevel ===
+              "aal2",
+          );
+        }
+      } catch (authError) {
+        console.error(authError);
+
+        if (!cancelled) {
+          setSession(null);
+          setIsMfaVerified(false);
+          setIsMfaEnrollmentOpen(
+            false,
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsAuthLoading(false);
+        }
+      }
+    }
+
+    checkAuthentication();
+
+    const {
+      data: {
+        subscription,
+      },
+    } =
+      supabase.auth.onAuthStateChange(
+        (_event, currentSession) => {
+          if (cancelled) {
+            return;
+          }
+
+          setSession(currentSession);
+
+          if (!currentSession) {
+            setIsMfaVerified(false);
+            setIsMfaEnrollmentOpen(
+              false,
+            );
+            return;
+          }
+
+          window.setTimeout(
+            async () => {
+              if (cancelled) {
+                return;
+              }
+
+              try {
+                const {
+                  data:
+                    assuranceData,
+                  error:
+                    assuranceError,
+                } =
+                  await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+
+                if (
+                  assuranceError
+                ) {
+                  throw assuranceError;
+                }
+
+                if (!cancelled) {
+                  setIsMfaVerified(
+                    assuranceData?.currentLevel ===
+                      "aal2",
+                  );
+                }
+              } catch (
+                authError
+              ) {
+                console.error(
+                  authError,
+                );
+
+                if (
+                  !cancelled
+                ) {
+                  setIsMfaVerified(
+                    false,
+                  );
+                }
+              }
+            },
+            0,
+          );
+        },
+      );
+
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !session ||
+      !isMfaVerified
+    ) {
+      setItems([]);
+      setIsLoading(false);
+      return undefined;
+    }
+
     let cancelled = false;
 
     async function loadInventory() {
@@ -456,19 +767,25 @@ function App() {
       setError("");
 
       try {
-        let databaseItems = await fetchInventoryItems();
+        let databaseItems =
+          await fetchInventoryItems();
 
         const migrationCompleted =
-          localStorage.getItem(MIGRATION_KEY) === "true";
+          localStorage.getItem(
+            MIGRATION_KEY,
+          ) === "true";
 
         if (
           !migrationCompleted &&
           databaseItems.length === 0
         ) {
-          const localItems = readLocalItems();
+          const localItems =
+            readLocalItems();
 
           if (localItems.length > 0) {
-            await createInventoryItems(localItems);
+            await createInventoryItems(
+              localItems,
+            );
             databaseItems =
               await fetchInventoryItems();
           }
@@ -484,7 +801,11 @@ function App() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(getErrorMessage(loadError));
+          setError(
+            getErrorMessage(
+              loadError,
+            ),
+          );
         }
       } finally {
         if (!cancelled) {
@@ -498,72 +819,92 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const filteredItems = useMemo(() => {
-    return items.filter((item) => {
-      const matchesCategory =
-        categoryFilter === "All" ||
-        String(item.category ?? "") ===
-          categoryFilter;
-
-      if (!matchesCategory) {
-        return false;
-      }
-
-      return itemMatchesSearch(
-        item,
-        searchTerm,
-      );
-    });
   }, [
-    items,
-    searchTerm,
-    categoryFilter,
+    session,
+    isMfaVerified,
   ]);
 
-  const totals = useMemo(() => {
-    return items.reduce(
-      (summary, item) => {
-        const quantity =
-          Number(item.quantity) || 0;
+  const filteredItems =
+    useMemo(
+      () =>
+        items.filter((item) => {
+          const matchesCategory =
+            categoryFilter ===
+              "All" ||
+            String(
+              item.category ?? "",
+            ) === categoryFilter;
 
-        const costPrice =
-          Number(item.costPrice) || 0;
-
-        const sellingPrice =
-          Number(item.sellingPrice) || 0;
-
-        return {
-          quantity:
-            summary.quantity + quantity,
-
-          costValue:
-            summary.costValue +
-            quantity * costPrice,
-
-          sellingValue:
-            summary.sellingValue +
-            quantity * sellingPrice,
-        };
-      },
-      {
-        quantity: 0,
-        costValue: 0,
-        sellingValue: 0,
-      },
+          return (
+            matchesCategory &&
+            itemMatchesSearch(
+              item,
+              searchTerm,
+            )
+          );
+        }),
+      [
+        items,
+        searchTerm,
+        categoryFilter,
+      ],
     );
-  }, [items]);
 
-  function openAddForm() {
+  const totals = useMemo(
+    () =>
+      items.reduce(
+        (summary, item) => {
+          const quantity =
+            Number(
+              item.quantity,
+            ) || 0;
+          const costPrice =
+            Number(
+              item.costPrice,
+            ) || 0;
+          const sellingPrice =
+            Number(
+              item.sellingPrice,
+            ) || 0;
+
+          return {
+            quantity:
+              summary.quantity +
+              quantity,
+            costValue:
+              summary.costValue +
+              quantity *
+                costPrice,
+            sellingValue:
+              summary.sellingValue +
+              quantity *
+                sellingPrice,
+          };
+        },
+        {
+          quantity: 0,
+          costValue: 0,
+          sellingValue: 0,
+        },
+      ),
+    [items],
+  );
+
+  function resetForm() {
     setForm(emptyForm);
     setEditingItemId(null);
+  }
+
+  function openAddForm() {
+    resetForm();
     setError("");
     setIsFormOpen(true);
   }
 
   function openEditForm(item) {
-    setForm(getFormFromItem(item));
+    setForm(
+      getFormFromItem(item),
+    );
     setEditingItemId(item.id);
     setError("");
     setIsFormOpen(true);
@@ -575,32 +916,95 @@ function App() {
     }
 
     setIsFormOpen(false);
-    setEditingItemId(null);
-    setForm(emptyForm);
+    resetForm();
     setError("");
   }
 
   function handleChange(event) {
-    const { name, value } = event.target;
+    const {
+      name,
+      value,
+    } = event.target;
 
-    setForm((currentForm) => ({
-      ...currentForm,
-      [name]: value,
-    }));
+    setForm(
+      (currentForm) => ({
+        ...currentForm,
+        [name]: value,
+      }),
+    );
+
+    setError("");
+  }
+
+  function handleImageChange(
+    event,
+  ) {
+    const file =
+      event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setForm(
+      (currentForm) => ({
+        ...currentForm,
+        imageFile: file,
+        imagePreview:
+          URL.createObjectURL(
+            file,
+          ),
+      }),
+    );
+
+    setError("");
+  }
+
+  function removeSelectedImage() {
+    if (
+      form.imagePreview &&
+      form.imageFile &&
+      form.imagePreview.startsWith(
+        "blob:",
+      )
+    ) {
+      URL.revokeObjectURL(
+        form.imagePreview,
+      );
+    }
+
+    if (imageInputRef.current) {
+      imageInputRef.current.value =
+        "";
+    }
+
+    setForm(
+      (currentForm) => ({
+        ...currentForm,
+        imageFile: null,
+        imagePreview: "",
+        imageUrl: "",
+        imagePath: "",
+      }),
+    );
 
     setError("");
   }
 
   function validateForm() {
-    const name = form.name.trim();
-    const quantity = Number(form.quantity);
+    const name =
+      form.name.trim();
+    const quantity =
+      Number(form.quantity);
 
     if (!name) {
       return "Please enter an item name.";
     }
 
     if (
-      !Number.isInteger(quantity) ||
+      !Number.isInteger(
+        quantity,
+      ) ||
       quantity < 1
     ) {
       return "Quantity must be a whole number greater than 0.";
@@ -608,14 +1012,19 @@ function App() {
 
     if (
       form.costPrice &&
-      Number.isNaN(Number(form.costPrice))
+      Number.isNaN(
+        Number(
+          form.costPrice,
+        ),
+      )
     ) {
       return "Please enter a valid cost price.";
     }
 
     if (
       form.costPrice &&
-      Number(form.costPrice) < 0
+      Number(form.costPrice) <
+        0
     ) {
       return "Cost price cannot be negative.";
     }
@@ -623,7 +1032,9 @@ function App() {
     if (
       form.sellingPrice &&
       Number.isNaN(
-        Number(form.sellingPrice),
+        Number(
+          form.sellingPrice,
+        ),
       )
     ) {
       return "Please enter a valid selling price.";
@@ -631,14 +1042,18 @@ function App() {
 
     if (
       form.sellingPrice &&
-      Number(form.sellingPrice) < 0
+      Number(
+        form.sellingPrice,
+      ) < 0
     ) {
       return "Selling price cannot be negative.";
     }
 
     if (
       form.weight &&
-      Number.isNaN(Number(form.weight))
+      Number.isNaN(
+        Number(form.weight),
+      )
     ) {
       return "Please enter a valid weight.";
     }
@@ -653,14 +1068,141 @@ function App() {
     return "";
   }
 
-  async function handleSubmit(event) {
+  async function saveNewItem() {
+    const newItem =
+      await createInventoryItem(
+        form,
+      );
+
+    if (!form.imageFile) {
+      return newItem;
+    }
+
+    try {
+      const uploadedImage =
+        await uploadInventoryImage(
+          newItem.id,
+          form.imageFile,
+        );
+
+      return await updateInventoryItemImage(
+        newItem.id,
+        uploadedImage.imageUrl,
+        uploadedImage.imagePath,
+      );
+    } catch (imageError) {
+      try {
+        await deleteInventoryItem(
+          newItem.id,
+        );
+      } catch {
+        // Keep the original image error visible.
+      }
+
+      throw imageError;
+    }
+  }
+
+  async function saveExistingItem() {
+    const currentItem =
+      items.find(
+        (item) =>
+          item.id ===
+          editingItemId,
+      );
+
+    if (!currentItem) {
+      throw new Error(
+        "The item could not be found.",
+      );
+    }
+
+    const updatedItem =
+      await updateInventoryItem(
+        editingItemId,
+        form,
+      );
+
+    if (form.imageFile) {
+      const uploadedImage =
+        await uploadInventoryImage(
+          editingItemId,
+          form.imageFile,
+        );
+
+      const imageUpdatedItem =
+        await updateInventoryItemImage(
+          editingItemId,
+          uploadedImage.imageUrl,
+          uploadedImage.imagePath,
+        );
+
+      if (
+        currentItem.imagePath &&
+        currentItem.imagePath !==
+          uploadedImage.imagePath
+      ) {
+        try {
+          await deleteInventoryImage(
+            currentItem.imagePath,
+          );
+        } catch {
+          // The new image is already saved.
+        }
+      }
+
+      return imageUpdatedItem;
+    }
+
+    const imageWasRemoved =
+      Boolean(
+        currentItem.imagePath,
+      ) &&
+      !form.imagePath;
+
+    if (imageWasRemoved) {
+      await deleteInventoryItemImage(
+        editingItemId,
+      );
+
+      try {
+        await deleteInventoryImage(
+          currentItem.imagePath,
+        );
+      } catch {
+        // The database no longer points to the removed image.
+      }
+
+      return {
+        ...updatedItem,
+        imageUrl: "",
+        imagePath: "",
+      };
+    }
+
+    return {
+      ...updatedItem,
+      imageUrl:
+        currentItem.imageUrl ||
+        "",
+      imagePath:
+        currentItem.imagePath ||
+        "",
+    };
+  }
+
+  async function handleSubmit(
+    event,
+  ) {
     event.preventDefault();
 
     const validationError =
       validateForm();
 
     if (validationError) {
-      setError(validationError);
+      setError(
+        validationError,
+      );
       return;
     }
 
@@ -668,50 +1210,57 @@ function App() {
     setError("");
 
     try {
-      if (isEditing) {
-        const updatedItem =
-          await updateInventoryItem(
-            editingItemId,
-            form,
+      const savedItem =
+        isEditing
+          ? await saveExistingItem()
+          : await saveNewItem();
+
+      setItems(
+        (currentItems) => {
+          if (!isEditing) {
+            return [
+              savedItem,
+              ...currentItems,
+            ];
+          }
+
+          return currentItems.map(
+            (item) =>
+              item.id ===
+              editingItemId
+                ? savedItem
+                : item,
           );
+        },
+      );
 
-        setItems((currentItems) =>
-          currentItems.map((item) =>
-            item.id === editingItemId
-              ? updatedItem
-              : item,
-          ),
-        );
-
-        setScannedItem((currentItem) =>
-          currentItem?.id === editingItemId
-            ? updatedItem
+      setScannedItem(
+        (currentItem) =>
+          currentItem?.id ===
+          editingItemId
+            ? savedItem
             : currentItem,
-        );
-      } else {
-        const newItem =
-          await createInventoryItem(form);
+      );
 
-        setItems((currentItems) => [
-          newItem,
-          ...currentItems,
-        ]);
-      }
-
-      setIsFormOpen(false);
-      setEditingItemId(null);
-      setForm(emptyForm);
+      closeForm();
     } catch (saveError) {
-      setError(getErrorMessage(saveError));
+      setError(
+        getErrorMessage(
+          saveError,
+        ),
+      );
     } finally {
       setIsSaving(false);
     }
   }
 
-  async function handleDelete(item) {
-    const shouldDelete = window.confirm(
-      `Delete "${item.name}" from your inventory?`,
-    );
+  async function handleDelete(
+    item,
+  ) {
+    const shouldDelete =
+      window.confirm(
+        `Delete "${item.name}" from your inventory?`,
+      );
 
     if (!shouldDelete) {
       return;
@@ -720,45 +1269,57 @@ function App() {
     setError("");
 
     try {
-      await deleteInventoryItem(item.id);
+      await deleteInventoryItem(
+        item.id,
+      );
 
-      setItems((currentItems) =>
-        currentItems.filter(
-          (currentItem) =>
-            currentItem.id !== item.id,
-        ),
+      if (item.imagePath) {
+        try {
+          await deleteInventoryImage(
+            item.imagePath,
+          );
+        } catch {
+          // The inventory record is already deleted.
+        }
+      }
+
+      setItems(
+        (currentItems) =>
+          currentItems.filter(
+            (currentItem) =>
+              currentItem.id !==
+              item.id,
+          ),
       );
 
       setSelectedLabelIds(
         (currentIds) =>
           currentIds.filter(
-            (id) => id !== item.id,
+            (id) =>
+              id !== item.id,
           ),
       );
 
-      if (scannedItem?.id === item.id) {
+      if (
+        scannedItem?.id ===
+        item.id
+      ) {
         setScannedItem(null);
       }
     } catch (deleteError) {
       setError(
-        getErrorMessage(deleteError),
+        getErrorMessage(
+          deleteError,
+        ),
       );
     }
   }
 
   function clearFilters() {
     setSearchTerm("");
-    setCategoryFilter("All");
-  }
-
-  function formatCurrency(value) {
-    return `₹${value.toLocaleString(
-      "en-IN",
-      {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      },
-    )}`;
+    setCategoryFilter(
+      "All",
+    );
   }
 
   function openScanner() {
@@ -780,21 +1341,30 @@ function App() {
     setBarcodeItem(null);
   }
 
-  function toggleLabelSelection(itemId) {
-    setSelectedLabelIds((currentIds) => {
-      if (currentIds.includes(itemId)) {
-        return currentIds.filter(
-          (id) => id !== itemId,
-        );
-      }
-
-      return [...currentIds, itemId];
-    });
+  function toggleLabelSelection(
+    itemId,
+  ) {
+    setSelectedLabelIds(
+      (currentIds) =>
+        currentIds.includes(
+          itemId,
+        )
+          ? currentIds.filter(
+              (id) =>
+                id !== itemId,
+            )
+          : [
+              ...currentIds,
+              itemId,
+            ],
+    );
   }
 
   function selectAllLabels() {
     setSelectedLabelIds(
-      filteredItems.map((item) => item.id),
+      filteredItems.map(
+        (item) => item.id,
+      ),
     );
   }
 
@@ -803,17 +1373,25 @@ function App() {
   }
 
   function closeLabelSelectionMode() {
-    setIsLabelSelectionMode(false);
+    setIsLabelSelectionMode(
+      false,
+    );
     setSelectedLabelIds([]);
   }
 
   async function downloadSelectedLabels() {
     const selectedItems =
-      filteredItems.filter((item) =>
-        selectedLabelIds.includes(item.id),
+      filteredItems.filter(
+        (item) =>
+          selectedLabelIds.includes(
+            item.id,
+          ),
       );
 
-    if (selectedItems.length === 0) {
+    if (
+      selectedItems.length ===
+      0
+    ) {
       setError(
         "Please select at least one item.",
       );
@@ -823,34 +1401,44 @@ function App() {
     const itemsWithoutSku =
       selectedItems.filter(
         (item) =>
-          !String(item.sku ?? "").trim(),
+          !String(
+            item.sku ?? "",
+          ).trim(),
       );
 
-    if (itemsWithoutSku.length > 0) {
+    if (
+      itemsWithoutSku.length >
+      0
+    ) {
       const names =
         itemsWithoutSku
           .map(
             (item) =>
-              item.name || "Unnamed item",
+              item.name ||
+              "Unnamed item",
           )
           .join(", ");
 
       setError(
         `These items need an SKU before labels can be created: ${names}`,
       );
-
       return;
     }
 
-    setIsDownloadingLabels(true);
+    setIsDownloadingLabels(
+      true,
+    );
     setError("");
 
     try {
-      const zip = new JSZip();
+      const zip =
+        new JSZip();
 
       for (const item of selectedItems) {
         const labelBlob =
-          await createLabelPng(item);
+          await createLabelPng(
+            item,
+          );
 
         zip.file(
           `${getSafeFileName(
@@ -861,9 +1449,11 @@ function App() {
       }
 
       const zipBlob =
-        await zip.generateAsync({
-          type: "blob",
-        });
+        await zip.generateAsync(
+          {
+            type: "blob",
+          },
+        );
 
       downloadBlob(
         zipBlob,
@@ -871,50 +1461,66 @@ function App() {
       );
 
       closeLabelSelectionMode();
-    } catch (downloadError) {
-      console.error(downloadError);
+    } catch (
+      downloadError
+    ) {
+      console.error(
+        downloadError,
+      );
 
       setError(
         downloadError?.message ||
           "Could not create the label download.",
       );
     } finally {
-      setIsDownloadingLabels(false);
+      setIsDownloadingLabels(
+        false,
+      );
     }
   }
 
-  const handleBarcodeScan = useCallback(
-    (scannedCode) => {
-      const normalizedCode =
-        normalizeText(scannedCode);
+  const handleBarcodeScan =
+    useCallback(
+      (scannedCode) => {
+        const normalizedCode =
+          normalizeText(
+            scannedCode,
+          );
 
-      if (!normalizedCode) {
-        setError(
-          "The scanner returned an empty barcode.",
+        if (!normalizedCode) {
+          setError(
+            "The scanner returned an empty barcode.",
+          );
+          return;
+        }
+
+        const matchedItem =
+          items.find(
+            (item) =>
+              normalizeText(
+                item.sku,
+              ) ===
+              normalizedCode,
+          );
+
+        if (!matchedItem) {
+          setError(
+            `No inventory item was found for SKU "${scannedCode}".`,
+          );
+          setScannedItem(null);
+          return;
+        }
+
+        setError("");
+        setScannedItem(
+          matchedItem,
         );
-        return;
-      }
-
-      const matchedItem = items.find(
-        (item) =>
-          normalizeText(item.sku) ===
-          normalizedCode,
-      );
-
-      if (!matchedItem) {
-        setError(
-          `No inventory item was found for SKU "${scannedCode}".`,
+        setIsScannerOpen(
+          false,
         );
-        setScannedItem(null);
-        return;
-      }
-
-      setError("");
-      setScannedItem(matchedItem);
-      setIsScannerOpen(false);
-    },
-    [items],
-  );
+      },
+      [items],
+    );
 
   function closeScanResult() {
     setScannedItem(null);
@@ -925,11 +1531,113 @@ function App() {
       return;
     }
 
-    const itemToEdit = scannedItem;
+    const itemToEdit =
+      scannedItem;
 
     setScannedItem(null);
     setIsScannerOpen(false);
-    openEditForm(itemToEdit);
+    openEditForm(
+      itemToEdit,
+    );
+  }
+
+  async function handleLogout() {
+    setError("");
+
+    const {
+      error: logoutError,
+    } =
+      await supabase.auth.signOut();
+
+    if (logoutError) {
+      setError(
+        getErrorMessage(
+          logoutError,
+        ),
+      );
+    }
+
+    setSession(null);
+    setIsMfaVerified(false);
+    setIsMfaEnrollmentOpen(
+      false,
+    );
+    setItems([]);
+  }
+
+  if (isAuthLoading) {
+    return (
+      <main className="auth-page">
+        <section className="auth-card">
+          <div className="auth-header">
+            <p className="eyebrow">
+              925 Jewellery
+            </p>
+
+            <h1>Loading...</h1>
+
+            <p>
+              Checking your
+              secure session.
+            </p>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return (
+      <Login
+        onLoginSuccess={(
+          newSession,
+        ) => {
+          setSession(
+            newSession,
+          );
+          setIsMfaVerified(
+            false,
+          );
+          setIsMfaEnrollmentOpen(
+            false,
+          );
+        }}
+      />
+    );
+  }
+
+  if (!isMfaVerified) {
+    if (
+      isMfaEnrollmentOpen
+    ) {
+      return (
+        <MfaEnroll
+          onEnrolled={() => {
+            setIsMfaEnrollmentOpen(
+              false,
+            );
+            setIsMfaVerified(
+              true,
+            );
+          }}
+        />
+      );
+    }
+
+    return (
+      <MfaVerify
+        onVerified={() => {
+          setIsMfaVerified(
+            true,
+          );
+        }}
+        onEnroll={() => {
+          setIsMfaEnrollmentOpen(
+            true,
+          );
+        }}
+      />
+    );
   }
 
   return (
@@ -944,8 +1652,9 @@ function App() {
             <h1>Inventory</h1>
 
             <p className="description">
-              Manage your jewellery stock in one
-              simple place.
+              Manage your jewellery
+              stock in one simple
+              place.
             </p>
           </div>
 
@@ -953,9 +1662,12 @@ function App() {
             <button
               className="secondary-button"
               type="button"
-              onClick={openScanner}
+              onClick={
+                openScanner
+              }
               disabled={
-                isLoading || isSaving
+                isLoading ||
+                isSaving
               }
             >
               Scan SKU
@@ -964,12 +1676,25 @@ function App() {
             <button
               className="primary-button"
               type="button"
-              onClick={openAddForm}
+              onClick={
+                openAddForm
+              }
               disabled={
-                isLoading || isSaving
+                isLoading ||
+                isSaving
               }
             >
               Add Item
+            </button>
+
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={
+                handleLogout
+              }
+            >
+              Logout
             </button>
           </div>
         </header>
@@ -981,33 +1706,46 @@ function App() {
             </h2>
 
             <p>
-              Connecting to your Supabase
-              database.
+              Connecting to your
+              Supabase database.
             </p>
           </section>
         ) : (
           <>
-            {items.length > 0 && (
+            {items.length >
+              0 && (
               <section
                 className="summary-grid"
                 aria-label="Inventory summary"
               >
                 <div className="summary-card">
-                  <p>Total Products</p>
+                  <p>
+                    Total Products
+                  </p>
+
                   <strong>
                     {items.length}
                   </strong>
                 </div>
 
                 <div className="summary-card">
-                  <p>Total Quantity</p>
+                  <p>
+                    Total Quantity
+                  </p>
+
                   <strong>
-                    {totals.quantity}
+                    {
+                      totals.quantity
+                    }
                   </strong>
                 </div>
 
                 <div className="summary-card">
-                  <p>Stock Cost Value</p>
+                  <p>
+                    Stock Cost
+                    Value
+                  </p>
+
                   <strong>
                     {formatCurrency(
                       totals.costValue,
@@ -1016,7 +1754,10 @@ function App() {
                 </div>
 
                 <div className="summary-card">
-                  <p>Selling Value</p>
+                  <p>
+                    Selling Value
+                  </p>
+
                   <strong>
                     {formatCurrency(
                       totals.sellingValue,
@@ -1026,16 +1767,19 @@ function App() {
               </section>
             )}
 
-            {items.length === 0 ? (
+            {items.length ===
+            0 ? (
               <section className="empty-state">
                 <h2>
-                  No inventory items yet
+                  No inventory
+                  items yet
                 </h2>
 
                 <p>
-                  Your jewellery items will
-                  appear here once you add your
-                  first item.
+                  Your jewellery
+                  items will appear
+                  here once you add
+                  your first item.
                 </p>
               </section>
             ) : (
@@ -1047,9 +1791,14 @@ function App() {
                     </p>
 
                     <h2>
-                      {filteredItems.length} of{" "}
-                      {items.length} item
-                      {items.length === 1
+                      {
+                        filteredItems.length
+                      }{" "}
+                      of{" "}
+                      {items.length}{" "}
+                      item
+                      {items.length ===
+                      1
                         ? ""
                         : "s"}
                     </h2>
@@ -1064,7 +1813,9 @@ function App() {
                           true,
                         )
                       }
-                      disabled={isSaving}
+                      disabled={
+                        isSaving
+                      }
                     >
                       Select Labels
                     </button>
@@ -1137,10 +1888,15 @@ function App() {
                       id="inventory-search"
                       type="search"
                       placeholder="Search name, SKU, category..."
-                      value={searchTerm}
-                      onChange={(event) =>
+                      value={
+                        searchTerm
+                      }
+                      onChange={(
+                        event,
+                      ) =>
                         setSearchTerm(
-                          event.target.value,
+                          event.target
+                            .value,
                         )
                       }
                     />
@@ -1153,10 +1909,15 @@ function App() {
 
                     <select
                       id="category-filter"
-                      value={categoryFilter}
-                      onChange={(event) =>
+                      value={
+                        categoryFilter
+                      }
+                      onChange={(
+                        event,
+                      ) =>
                         setCategoryFilter(
-                          event.target.value,
+                          event.target
+                            .value,
                         )
                       }
                     >
@@ -1165,12 +1926,20 @@ function App() {
                       </option>
 
                       {categories.map(
-                        (category) => (
+                        (
+                          category,
+                        ) => (
                           <option
-                            key={category}
-                            value={category}
+                            key={
+                              category
+                            }
+                            value={
+                              category
+                            }
                           >
-                            {category}
+                            {
+                              category
+                            }
                           </option>
                         ),
                       )}
@@ -1196,12 +1965,14 @@ function App() {
                 0 ? (
                   <div className="no-results">
                     <h3>
-                      No matching items
+                      No matching
+                      items
                     </h3>
 
                     <p>
-                      Try a different search
-                      term or remove the
+                      Try a different
+                      search term or
+                      remove the
                       category filter.
                     </p>
 
@@ -1218,7 +1989,9 @@ function App() {
                 ) : (
                   <div className="item-grid">
                     {filteredItems.map(
-                      (item) => {
+                      (
+                        item,
+                      ) => {
                         const isSelected =
                           selectedLabelIds.includes(
                             item.id,
@@ -1231,7 +2004,9 @@ function App() {
                                 ? "item-card-selected"
                                 : ""
                             }`}
-                            key={item.id}
+                            key={
+                              item.id
+                            }
                           >
                             {isLabelSelectionMode && (
                               <label className="label-select-checkbox">
@@ -1253,6 +2028,17 @@ function App() {
                               </label>
                             )}
 
+                            {item.imageUrl && (
+                              <div className="item-image">
+                                <img
+                                  src={
+                                    item.imageUrl
+                                  }
+                                  alt={`${item.name} product`}
+                                />
+                              </div>
+                            )}
+
                             <div className="item-card-header">
                               <div>
                                 <p className="item-category">
@@ -1262,7 +2048,9 @@ function App() {
                                 </p>
 
                                 <h3>
-                                  {item.name}
+                                  {
+                                    item.name
+                                  }
                                 </h3>
                               </div>
 
@@ -1276,7 +2064,10 @@ function App() {
 
                             <dl className="item-details">
                               <div>
-                                <dt>SKU</dt>
+                                <dt>
+                                  SKU
+                                </dt>
+
                                 <dd>
                                   {item.sku ||
                                     "—"}
@@ -1287,6 +2078,7 @@ function App() {
                                 <dt>
                                   Material
                                 </dt>
+
                                 <dd>
                                   {
                                     item.material
@@ -1295,7 +2087,10 @@ function App() {
                               </div>
 
                               <div>
-                                <dt>Cost</dt>
+                                <dt>
+                                  Cost
+                                </dt>
+
                                 <dd>
                                   {item.costPrice
                                     ? formatCurrency(
@@ -1308,15 +2103,14 @@ function App() {
                               </div>
 
                               <div>
-                                <dt>Weight</dt>
+                                <dt>
+                                  Weight
+                                </dt>
+
                                 <dd>
-                                  {item.weight
-                                    ? `${Number(
-                                        item.weight,
-                                      ).toFixed(
-                                        3,
-                                      )} g`
-                                    : "—"}
+                                  {formatWeight(
+                                    item.weight,
+                                  )}
                                 </dd>
                               </div>
 
@@ -1324,6 +2118,7 @@ function App() {
                                 <dt>
                                   Selling price
                                 </dt>
+
                                 <dd>
                                   {item.sellingPrice
                                     ? formatCurrency(
@@ -1338,7 +2133,9 @@ function App() {
 
                             {item.notes && (
                               <p className="item-notes">
-                                {item.notes}
+                                {
+                                  item.notes
+                                }
                               </p>
                             )}
 
@@ -1401,16 +2198,19 @@ function App() {
           </>
         )}
 
-        {error && !isFormOpen && (
-          <p className="form-error">
-            {error}
-          </p>
-        )}
+        {error &&
+          !isFormOpen && (
+            <p className="form-error">
+              {error}
+            </p>
+          )}
 
         {isFormOpen && (
           <div
             className="modal-backdrop"
-            onMouseDown={(event) => {
+            onMouseDown={(
+              event,
+            ) => {
               if (
                 event.target ===
                   event.currentTarget &&
@@ -1449,14 +2249,22 @@ function App() {
                   className="close-button"
                   type="button"
                   aria-label="Close form"
-                  onClick={closeForm}
-                  disabled={isSaving}
+                  onClick={
+                    closeForm
+                  }
+                  disabled={
+                    isSaving
+                  }
                 >
                   ×
                 </button>
               </div>
 
-              <form onSubmit={handleSubmit}>
+              <form
+                onSubmit={
+                  handleSubmit
+                }
+              >
                 <div className="form-grid">
                   <label>
                     Item Name{" "}
@@ -1466,7 +2274,9 @@ function App() {
                       name="name"
                       type="text"
                       placeholder="e.g. Silver Ring"
-                      value={form.name}
+                      value={
+                        form.name
+                      }
                       onChange={
                         handleChange
                       }
@@ -1481,7 +2291,9 @@ function App() {
                       name="sku"
                       type="text"
                       placeholder="e.g. SR001"
-                      value={form.sku}
+                      value={
+                        form.sku
+                      }
                       onChange={
                         handleChange
                       }
@@ -1501,12 +2313,20 @@ function App() {
                       }
                     >
                       {categories.map(
-                        (category) => (
+                        (
+                          category,
+                        ) => (
                           <option
-                            key={category}
-                            value={category}
+                            key={
+                              category
+                            }
+                            value={
+                              category
+                            }
                           >
-                            {category}
+                            {
+                              category
+                            }
                           </option>
                         ),
                       )}
@@ -1626,6 +2446,72 @@ function App() {
                       }
                     />
                   </label>
+
+                  <div className="image-upload-field">
+                    <div className="image-upload-label">
+                      <span>
+                        Product Photo
+                      </span>
+
+                      <small>
+                        Optional
+                      </small>
+                    </div>
+
+                    {form.imagePreview ? (
+                      <div className="image-upload-preview">
+                        <img
+                          src={
+                            form.imagePreview
+                          }
+                          alt="Product preview"
+                        />
+
+                        <button
+                          className="remove-image-button"
+                          type="button"
+                          onClick={
+                            removeSelectedImage
+                          }
+                          disabled={
+                            isSaving
+                          }
+                        >
+                          Remove Photo
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="image-upload-button"
+                        type="button"
+                        onClick={() =>
+                          imageInputRef.current?.click()
+                        }
+                        disabled={
+                          isSaving
+                        }
+                      >
+                        Choose Photo
+                      </button>
+                    )}
+
+                    <input
+                      ref={
+                        imageInputRef
+                      }
+                      className="image-file-input"
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={
+                        handleImageChange
+                      }
+                    />
+
+                    <small className="image-upload-help">
+                      JPG, PNG or WebP ·
+                      maximum 5 MB
+                    </small>
+                  </div>
                 </div>
 
                 {error && (
@@ -1638,7 +2524,9 @@ function App() {
                   <button
                     className="secondary-button"
                     type="button"
-                    onClick={closeForm}
+                    onClick={
+                      closeForm
+                    }
                     disabled={
                       isSaving
                     }
@@ -1678,7 +2566,9 @@ function App() {
 
         {barcodeItem && (
           <BarcodeGenerator
-            item={barcodeItem}
+            item={
+              barcodeItem
+            }
             onClose={
               closeBarcode
             }
@@ -1700,7 +2590,9 @@ function App() {
                   </p>
 
                   <h2 id="scanner-result-title">
-                    {scannedItem.name}
+                    {
+                      scannedItem.name
+                    }
                   </h2>
                 </div>
 
@@ -1716,17 +2608,32 @@ function App() {
                 </button>
               </div>
 
+              {scannedItem.imageUrl && (
+                <div className="scanner-result-image">
+                  <img
+                    src={
+                      scannedItem.imageUrl
+                    }
+                    alt={`${scannedItem.name} product`}
+                  />
+                </div>
+              )}
+
               <dl className="scanner-result-details">
                 <div>
                   <dt>SKU</dt>
+
                   <dd>
-                    {scannedItem.sku ||
-                      "—"}
+                    {
+                      scannedItem.sku ||
+                      "—"
+                    }
                   </dd>
                 </div>
 
                 <div>
                   <dt>Category</dt>
+
                   <dd>
                     {
                       scannedItem.category
@@ -1736,6 +2643,7 @@ function App() {
 
                 <div>
                   <dt>Material</dt>
+
                   <dd>
                     {
                       scannedItem.material
@@ -1745,6 +2653,7 @@ function App() {
 
                 <div>
                   <dt>Quantity</dt>
+
                   <dd>
                     {
                       scannedItem.quantity
@@ -1753,7 +2662,18 @@ function App() {
                 </div>
 
                 <div>
+                  <dt>Weight</dt>
+
+                  <dd>
+                    {formatWeight(
+                      scannedItem.weight,
+                    )}
+                  </dd>
+                </div>
+
+                <div>
                   <dt>Cost</dt>
+
                   <dd>
                     {scannedItem.costPrice
                       ? formatCurrency(
@@ -1766,7 +2686,10 @@ function App() {
                 </div>
 
                 <div>
-                  <dt>Selling price</dt>
+                  <dt>
+                    Selling price
+                  </dt>
+
                   <dd>
                     {scannedItem.sellingPrice
                       ? formatCurrency(
@@ -1781,6 +2704,7 @@ function App() {
                 {scannedItem.notes && (
                   <div>
                     <dt>Notes</dt>
+
                     <dd>
                       {
                         scannedItem.notes

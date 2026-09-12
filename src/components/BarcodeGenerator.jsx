@@ -48,14 +48,14 @@ function createBarcodeSvg(item) {
 
   JsBarcode(svg, item.sku, {
     format: "CODE128",
-    width: 2,
-    height: 80,
+    width: 10,
+    height: 300,
     displayValue: true,
     text: item.sku,
-    fontSize: 16,
+    fontSize: 24,
     font: "Arial",
-    textMargin: 6,
-    margin: 10,
+    textMargin: 10,
+    margin: 20,
     background: "#ffffff",
     lineColor: "#252525",
   });
@@ -377,184 +377,274 @@ export default function BarcodeGenerator({
     }
   }
 
-  function printLabel() {
-    if (!item?.sku) {
+  // src/components/BarcodeGenerator.jsx
+
+function printLabel() {
+  if (!item?.sku) {
+    return;
+  }
+
+  try {
+    const sku = String(item.sku);
+    const productName =
+      String(item.name || "Jewellery Item");
+    const category =
+      String(item.category || "Other");
+
+    const weight = item.weight
+      ? `${Number(item.weight).toFixed(3)} g`
+      : "—";
+
+    const barcodeSvgElement =
+      document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "svg",
+      );
+
+    JsBarcode(barcodeSvgElement, sku, {
+      format: "CODE128",
+      width: 2,
+      height: 70,
+      displayValue: true,
+      text: sku,
+      fontSize: 13,
+      font: "Arial",
+      textMargin: 4,
+      margin: 8,
+      background: "#ffffff",
+      lineColor: "#252525",
+    });
+
+    barcodeSvgElement.setAttribute(
+      "xmlns",
+      "http://www.w3.org/2000/svg",
+    );
+
+    const barcodeSvg =
+      new XMLSerializer().serializeToString(
+        barcodeSvgElement,
+      );
+
+    const printWindow = window.open(
+      "",
+      "_blank",
+      "width=800,height=600",
+    );
+
+    if (!printWindow) {
+      setError(
+        "The print window was blocked. Please allow pop-ups for this app and try again.",
+      );
       return;
     }
 
-    try {
-      const barcodeSvg = createBarcodeSvg(item);
+    const printDocument = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="UTF-8" />
 
-      const weight = item.weight
-        ? `${Number(item.weight).toFixed(3)} g`
-        : "—";
+          <title>
+            ${escapeHtml(productName)} - ${escapeHtml(sku)}
+          </title>
 
-      const productName =
-        String(item.name || "Jewellery Item");
+          <style>
+            @page {
+              size: 70mm 45mm;
+              margin: 0;
+            }
 
-      const category =
-        String(item.category || "Other");
+            * {
+              box-sizing: border-box;
+            }
 
-      const sku = String(item.sku);
+            html,
+            body {
+              width: 70mm;
+              height: 45mm;
+              margin: 0;
+              padding: 0;
+              background: #ffffff;
+            }
 
-      const printWindow = window.open(
-        "",
-        "_blank",
-        "width=700,height=600",
-      );
+            body {
+              font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+            }
 
-      if (!printWindow) {
-        setError(
-          "The print window was blocked. Please allow pop-ups for this app and try again.",
-        );
-        return;
-      }
+            .label {
+              position: relative;
+              width: 70mm;
+              height: 45mm;
+              overflow: hidden;
+              padding: 2.5mm 3mm;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              background: #ffffff;
+              color: #252525;
+            }
 
-      const printDocument = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>
-              ${escapeHtml(productName)} - ${escapeHtml(sku)}
-            </title>
+            .brand {
+              margin: 0 0 1mm;
+              font-size: 6.5pt;
+              font-weight: 700;
+              letter-spacing: 1.2px;
+              line-height: 1;
+            }
 
-            <style>
-              @page {
-                size: 70mm 45mm;
-                margin: 0;
-              }
+            .product {
+              width: 100%;
+              margin: 0 0 1mm;
+              overflow: hidden;
+              font-size: 10pt;
+              font-weight: 700;
+              line-height: 1.1;
+              text-align: center;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
 
-              * {
-                box-sizing: border-box;
-              }
+            .details {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 4mm;
+              width: 100%;
+              margin: 0 0 1.5mm;
+              font-size: 7pt;
+              font-weight: 600;
+              line-height: 1;
+            }
 
+            .detail {
+              white-space: nowrap;
+            }
+
+            .barcode-wrapper {
+              width: 62mm;
+              height: 18mm;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+            }
+
+            .barcode-wrapper svg {
+              display: block;
+              width: 58mm;
+              height: auto;
+              max-width: 58mm;
+              max-height: 17mm;
+            }
+
+            .sku {
+              margin-top: 0.5mm;
+              font-size: 7pt;
+              font-weight: 700;
+              line-height: 1;
+            }
+
+            .footer-line {
+              width: 54mm;
+              height: 0.25mm;
+              margin-top: 1.5mm;
+              background: #8a6d46;
+            }
+
+            .footer {
+              margin-top: 1mm;
+              font-size: 6pt;
+              font-weight: 500;
+              line-height: 1;
+            }
+
+            @media print {
               html,
               body {
-                margin: 0;
-                padding: 0;
                 width: 70mm;
                 height: 45mm;
-                background: #ffffff;
-              }
-
-              body {
-                font-family:
-                  Arial,
-                  Helvetica,
-                  sans-serif;
+                margin: 0;
+                padding: 0;
               }
 
               .label {
                 width: 70mm;
                 height: 45mm;
-                padding: 3mm;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                overflow: hidden;
-                background: #ffffff;
-                color: #252525;
+                margin: 0;
               }
+            }
+          </style>
+        </head>
 
-              .brand {
-                margin-bottom: 1.5mm;
-                font-size: 7pt;
-                font-weight: 700;
-                letter-spacing: 1.4px;
-              }
+        <body>
+          <div class="label">
 
-              .product {
-                max-width: 62mm;
-                margin-bottom: 1mm;
-                overflow: hidden;
-                font-size: 12pt;
-                font-weight: 700;
-                text-align: center;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-              }
-
-              .details {
-                display: flex;
-                gap: 3mm;
-                margin-bottom: 1.5mm;
-                font-size: 7.5pt;
-                font-weight: 600;
-              }
-
-              .detail {
-                white-space: nowrap;
-              }
-
-              .barcode {
-                width: 58mm;
-                height: auto;
-                max-height: 15mm;
-                display: block;
-              }
-
-              .sku {
-                margin-top: 0.5mm;
-                font-size: 8pt;
-                font-weight: 700;
-              }
-            </style>
-          </head>
-
-          <body>
-            <div class="label">
-              <div class="brand">
-                925 JEWELLERY
-              </div>
-
-              <div class="product">
-                ${escapeHtml(productName)}
-              </div>
-
-              <div class="details">
-                <span class="detail">
-                  ${escapeHtml(category)}
-                </span>
-
-                <span class="detail">
-                  ${escapeHtml(weight)}
-                </span>
-              </div>
-
-              <div class="barcode">
-                ${barcodeSvg}
-              </div>
-
-              <div class="sku">
-                SKU: ${escapeHtml(sku)}
-              </div>
+            <div class="brand">
+              925 JEWELLERY
             </div>
 
-            <script>
-              window.onload = function () {
-                window.focus();
+            <div class="product">
+              ${escapeHtml(productName)}
+            </div>
+
+            <div class="details">
+              <span class="detail">
+                ${escapeHtml(category)}
+              </span>
+
+              <span class="detail">
+                ${escapeHtml(weight)}
+              </span>
+            </div>
+
+            <div class="barcode-wrapper">
+              ${barcodeSvg}
+            </div>
+
+            <div class="sku">
+              SKU: ${escapeHtml(sku)}
+            </div>
+
+            <div class="footer-line"></div>
+
+            <div class="footer">
+              925 Silver
+            </div>
+
+          </div>
+
+          <script>
+            window.onload = function () {
+              window.focus();
+
+              setTimeout(function () {
                 window.print();
-              };
+              }, 250);
+            };
 
-              window.onafterprint = function () {
+            window.onafterprint = function () {
+              setTimeout(function () {
                 window.close();
-              };
-            </script>
-          </body>
-        </html>
-      `;
+              }, 100);
+            };
+          </script>
+        </body>
+      </html>
+    `;
 
-      printWindow.document.open();
-      printWindow.document.write(printDocument);
-      printWindow.document.close();
-    } catch (printError) {
-      setError(
-        printError?.message ||
-          "Unable to prepare the label for printing.",
-      );
-    }
+    printWindow.document.open();
+    printWindow.document.write(printDocument);
+    printWindow.document.close();
+  } catch (printError) {
+    setError(
+      printError?.message ||
+        "Unable to prepare the label for printing.",
+    );
   }
+}
 
   function handleBackdropClick(event) {
     if (event.target === event.currentTarget) {
