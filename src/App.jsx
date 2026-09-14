@@ -9,11 +9,12 @@ import {
 } from "react";
 import JSZip from "jszip";
 import JsBarcode from "jsbarcode";
+import * as XLSX from "xlsx";
 import "./App.css";
+import Dashboard from "./components/Dashboard";
 import BarcodeGenerator from "./components/BarcodeGenerator";
 import BarcodeScanner from "./components/BarcodeScanner";
 import Login from "./components/Login";
-import MfaEnroll from "./components/MfaEnroll";
 import MfaVerify from "./components/MfaVerify";
 import {
   createInventoryItem,
@@ -32,6 +33,7 @@ import { supabase } from "./lib/supabaseClient";
 
 const STORAGE_KEY = "925-jewellery-inventory";
 const MIGRATION_KEY = "925-jewellery-supabase-migrated";
+const CUSTOM_CATEGORIES_KEY = "925-jewellery-custom-categories";
 
 const emptyForm = {
   name: "",
@@ -49,7 +51,7 @@ const emptyForm = {
   imagePath: "",
 };
 
-const categories = [
+const BASE_CATEGORIES = [
   "Ring",
   "Necklace",
   "Bracelet",
@@ -57,6 +59,149 @@ const categories = [
   "Pendant",
   "Other",
 ];
+
+const ADD_CATEGORY_VALUE = "__add_new_category__";
+
+const EXCEL_BATCH_SIZE = 500;
+const EXCEL_PREVIEW_LIMIT = 100;
+const EXCEL_MAX_FILE_SIZE = 20 * 1024 * 1024;
+
+const CATEGORY_PREFIXES = {
+  Ring: "RG",
+  Necklace: "NC",
+  Bracelet: "BR",
+  Earrings: "ER",
+  Pendant: "PD",
+  Other: "OT",
+};
+
+const EXCEL_COLUMN_ALIASES = {
+  name: [
+    "item name",
+    "name",
+    "product name",
+  ],
+  sku: [
+    "sku",
+    "sku code",
+    "sku/code",
+    "code",
+  ],
+  category: [
+    "category",
+    "type",
+  ],
+  material: [
+    "material",
+  ],
+  quantity: [
+    "quantity",
+    "qty",
+    "stock quantity",
+  ],
+  weight: [
+    "weight",
+    "weight g",
+    "weight grams",
+    "weight (g)",
+    "weight in grams",
+  ],
+  costPrice: [
+    "cost price",
+    "cost",
+    "cost price rs",
+    "cost price ₹",
+  ],
+  sellingPrice: [
+    "selling price",
+    "selling",
+    "sale price",
+    "price",
+    "selling price rs",
+    "selling price ₹",
+  ],
+  notes: [
+    "notes",
+    "note",
+    "description",
+  ],
+};
+
+function readCustomCategories() {
+  try {
+    const savedCategories =
+      localStorage.getItem(
+        CUSTOM_CATEGORIES_KEY,
+      );
+
+    if (!savedCategories) {
+      return [];
+    }
+
+    const parsedCategories =
+      JSON.parse(savedCategories);
+
+    if (!Array.isArray(parsedCategories)) {
+      return [];
+    }
+
+    const seen = new Set();
+
+    return parsedCategories
+      .map((category) =>
+        String(category ?? "").trim(),
+      )
+      .filter((category) => {
+        const normalized =
+          category.toLowerCase();
+
+        if (
+          !category ||
+          BASE_CATEGORIES.some(
+            (baseCategory) =>
+              baseCategory.toLowerCase() ===
+              normalized,
+          ) ||
+          seen.has(normalized)
+        ) {
+          return false;
+        }
+
+        seen.add(normalized);
+        return true;
+      });
+  } catch {
+    return [];
+  }
+}
+
+function uniqueCategories(categories) {
+  const seen = new Set();
+  const unique = [];
+
+  categories.forEach((category) => {
+    const value = String(category ?? "").trim();
+    const normalized = value.toLowerCase();
+
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+
+    seen.add(normalized);
+    unique.push(value);
+  });
+
+  return unique.sort((first, second) =>
+    first.localeCompare(
+      second,
+      undefined,
+      {
+        sensitivity: "base",
+        numeric: true,
+      },
+    ),
+  );
+}
 
 function normalizeText(value) {
   return String(value ?? "")
@@ -90,10 +235,8 @@ function levenshteinDistance(first, second) {
     const currentRow = [i];
 
     for (let j = 1; j <= b.length; j += 1) {
-      const insertionCost =
-        currentRow[j - 1] + 1;
-      const deletionCost =
-        previousRow[j] + 1;
+      const insertionCost = currentRow[j - 1] + 1;
+      const deletionCost = previousRow[j] + 1;
       const replacementCost =
         previousRow[j - 1] +
         (a[i - 1] === b[j - 1] ? 0 : 1);
@@ -125,14 +268,9 @@ function getAllowedTypoDistance(word) {
   return 2;
 }
 
-function wordMatchesSearch(
-  searchWord,
-  inventoryWord,
-) {
+function wordMatchesSearch(searchWord, inventoryWord) {
   const search = normalizeText(searchWord);
-  const inventory = normalizeText(
-    inventoryWord,
-  );
+  const inventory = normalizeText(inventoryWord);
 
   if (!search || !inventory) {
     return false;
@@ -145,33 +283,26 @@ function wordMatchesSearch(
     return true;
   }
 
-  const allowedDistance =
-    getAllowedTypoDistance(search);
+  const allowedDistance = getAllowedTypoDistance(search);
 
   if (allowedDistance === 0) {
     return false;
   }
 
   if (
-    Math.abs(
-      search.length - inventory.length,
-    ) > allowedDistance
+    Math.abs(search.length - inventory.length) >
+    allowedDistance
   ) {
     return false;
   }
 
   return (
-    levenshteinDistance(
-      search,
-      inventory,
-    ) <= allowedDistance
+    levenshteinDistance(search, inventory) <=
+    allowedDistance
   );
 }
 
-function itemMatchesSearch(
-  item,
-  searchTerm,
-) {
+function itemMatchesSearch(item, searchTerm) {
   const search = normalizeText(searchTerm);
 
   if (!search) {
@@ -186,27 +317,24 @@ function itemMatchesSearch(
     item.notes,
   ];
 
-  const searchableWords =
-    searchableFields.flatMap(
-      (field) =>
-        normalizeText(field)
-          .split(/[\s\-_/.,]+/)
-          .filter(Boolean),
-    );
+  const searchableWords = searchableFields.flatMap(
+    (field) =>
+      normalizeText(field)
+        .split(/[\s\-_/.,]+/)
+        .filter(Boolean),
+  );
 
   const searchWords = search
     .split(/[\s\-_/.,]+/)
     .filter(Boolean);
 
-  return searchWords.every(
-    (searchWord) =>
-      searchableWords.some(
-        (inventoryWord) =>
-          wordMatchesSearch(
-            searchWord,
-            inventoryWord,
-          ),
+  return searchWords.every((searchWord) =>
+    searchableWords.some((inventoryWord) =>
+      wordMatchesSearch(
+        searchWord,
+        inventoryWord,
       ),
+    ),
   );
 }
 
@@ -219,8 +347,7 @@ function readLocalItems() {
       return [];
     }
 
-    const parsedItems =
-      JSON.parse(savedItems);
+    const parsedItems = JSON.parse(savedItems);
 
     return Array.isArray(parsedItems)
       ? parsedItems
@@ -252,7 +379,9 @@ function getFormFromItem(item) {
     sellingPrice: String(
       item.sellingPrice ?? "",
     ),
-    notes: String(item.notes ?? ""),
+    notes: String(
+      item.notes ?? "",
+    ),
     imageFile: null,
     imagePreview: String(
       item.imageUrl ?? "",
@@ -283,7 +412,8 @@ function getSafeFileName(value) {
       )
       .replace(
         /^-+|-+$/g,
-        "") || "label"
+        "",
+      ) || "label"
   );
 }
 
@@ -352,6 +482,7 @@ function createLabelPng(item) {
 
         canvas.width =
           labelWidth * scale;
+
         canvas.height =
           labelHeight * scale;
 
@@ -374,6 +505,7 @@ function createLabelPng(item) {
 
         context.fillStyle =
           "#ffffff";
+
         context.fillRect(
           0,
           0,
@@ -383,6 +515,7 @@ function createLabelPng(item) {
 
         context.strokeStyle =
           "#e3ded8";
+
         context.lineWidth = 2;
 
         context.strokeRect(
@@ -416,8 +549,7 @@ function createLabelPng(item) {
         const weight =
           item.weight !== "" &&
           item.weight !== null &&
-          item.weight !==
-            undefined
+          item.weight !== undefined
             ? `${Number(
                 item.weight,
               ).toFixed(3)} g`
@@ -433,6 +565,7 @@ function createLabelPng(item) {
 
         const targetBarcodeWidth =
           560;
+
         const targetBarcodeHeight =
           125;
 
@@ -503,6 +636,7 @@ function downloadBlob(
 ) {
   const url =
     URL.createObjectURL(blob);
+
   const link =
     document.createElement("a");
 
@@ -519,7 +653,10 @@ function downloadBlob(
 }
 
 function formatCurrency(value) {
-  return `₹${value.toLocaleString(
+  const numericValue =
+    Number(value) || 0;
+
+  return `₹${numericValue.toLocaleString(
     "en-IN",
     {
       minimumFractionDigits: 2,
@@ -537,41 +674,484 @@ function formatWeight(value) {
     return "—";
   }
 
-  return `${Number(value).toFixed(
-    3,
-  )} g`;
+  return `${Number(value).toFixed(3)} g`;
+}
+
+function revokeBlobPreview(preview) {
+  if (
+    preview &&
+    String(preview).startsWith("blob:")
+  ) {
+    URL.revokeObjectURL(preview);
+  }
+}
+
+function normalizeExcelHeader(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[₹$€£]/g, "")
+    .replace(/[()]/g, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function findExcelColumn(headers, aliases) {
+  const normalizedHeaders = headers.map(
+    (header) =>
+      normalizeExcelHeader(header),
+  );
+
+  for (const alias of aliases) {
+    const index =
+      normalizedHeaders.indexOf(
+        normalizeExcelHeader(alias),
+      );
+
+    if (index !== -1) {
+      return headers[index];
+    }
+  }
+
+  return null;
+}
+
+function getExcelCell(row, column) {
+  if (!column) {
+    return "";
+  }
+
+  return row[column];
+}
+
+function parseExcelNumber(
+  value,
+  fieldName,
+  rowNumber,
+  options = {},
+) {
+  const {
+    integer = false,
+    minimum = 0,
+    optional = true,
+  } = options;
+
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ""
+  ) {
+    if (optional) {
+      return null;
+    }
+
+    throw new Error(
+      `${fieldName} is required on row ${rowNumber}.`,
+    );
+  }
+
+  const cleanedValue =
+    String(value)
+      .trim()
+      .replace(/[₹,$€£]/g, "")
+      .replace(/,/g, "");
+
+  const numberValue =
+    Number(cleanedValue);
+
+  if (
+    !Number.isFinite(numberValue)
+  ) {
+    throw new Error(
+      `${fieldName} must be a number on row ${rowNumber}.`,
+    );
+  }
+
+  if (numberValue < minimum) {
+    throw new Error(
+      `${fieldName} cannot be negative on row ${rowNumber}.`,
+    );
+  }
+
+  if (
+    integer &&
+    !Number.isInteger(numberValue)
+  ) {
+    throw new Error(
+      `${fieldName} must be a whole number on row ${rowNumber}.`,
+    );
+  }
+
+  return numberValue;
+}
+
+function getCategoryPrefix(category) {
+  const trimmedCategory =
+    String(category || "")
+      .trim();
+
+  if (
+    CATEGORY_PREFIXES[
+      trimmedCategory
+    ]
+  ) {
+    return CATEGORY_PREFIXES[
+      trimmedCategory
+    ];
+  }
+
+  const words =
+    trimmedCategory
+      .split(/[^a-zA-Z0-9]+/)
+      .filter(Boolean);
+
+  if (words.length >= 2) {
+    const initials = words
+      .map((word) => word[0])
+      .join("")
+      .toUpperCase();
+
+    if (initials.length >= 2) {
+      return initials.slice(0, 2);
+    }
+  }
+
+  const letters =
+    trimmedCategory
+      .replace(/[^a-zA-Z]/g, "")
+      .toUpperCase();
+
+  if (letters.length >= 2) {
+    return letters.slice(0, 2);
+  }
+
+  if (letters.length === 1) {
+    return `${letters}X`;
+  }
+
+  return "OT";
+}
+
+function getNextSkuNumber(
+  items,
+  category,
+  reservedNumbers,
+) {
+  const prefix =
+    getCategoryPrefix(
+      category,
+    );
+
+  let maximumNumber = 0;
+
+  for (const item of items) {
+    const sku =
+      String(item.sku ?? "")
+        .trim()
+        .toUpperCase();
+
+    const match =
+      sku.match(
+        new RegExp(
+          `^${prefix}(\\d+)$`,
+        ),
+      );
+
+    if (match) {
+      maximumNumber =
+        Math.max(
+          maximumNumber,
+          Number(match[1]),
+        );
+    }
+  }
+
+  for (
+    const number of reservedNumbers
+  ) {
+    maximumNumber =
+      Math.max(
+        maximumNumber,
+        number,
+      );
+  }
+
+  return {
+    prefix,
+    number:
+      maximumNumber + 1,
+  };
+}
+
+function buildGeneratedSku(
+  items,
+  category,
+  counters,
+) {
+  const prefix =
+    getCategoryPrefix(
+      category,
+    );
+
+  if (!counters.has(prefix)) {
+    counters.set(
+      prefix,
+      getNextSkuNumber(
+        items,
+        category,
+        [],
+      ).number - 1,
+    );
+  }
+
+  const nextNumber =
+    counters.get(prefix) + 1;
+
+  counters.set(
+    prefix,
+    nextNumber,
+  );
+
+  return `${prefix}${String(
+    nextNumber,
+  ).padStart(3, "0")}`;
+}
+
+function normalizeSkuValue(value, category) {
+  const rawValue = String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/[^A-Z0-9_-]/g, "");
+
+  if (!rawValue) {
+    return "";
+  }
+
+  const prefix = getCategoryPrefix(category);
+
+  if (/^\d+$/.test(rawValue)) {
+    const number = Number(rawValue);
+
+    if (!Number.isFinite(number)) {
+      return "";
+    }
+
+    return `${prefix}${String(number).padStart(3, "0")}`;
+  }
+
+  const categorySkuMatch = rawValue.match(
+    new RegExp(`^${prefix}(\\d+)$`, "i"),
+  );
+
+  if (categorySkuMatch) {
+    return `${prefix}${String(
+      Number(categorySkuMatch[1]),
+    ).padStart(3, "0")}`;
+  }
+
+  return rawValue;
+}
+
+function getNextFormSku(items, category) {
+  return buildGeneratedSku(
+    items,
+    category,
+    new Map(),
+  );
+}
+
+function isSkuAlreadyUsed(
+  items,
+  sku,
+  editingItemId = null,
+) {
+  const normalizedSku = normalizeImportedSku(sku);
+
+  if (!normalizedSku) {
+    return false;
+  }
+
+  return items.some(
+    (item) =>
+      item.id !== editingItemId &&
+      normalizeImportedSku(item.sku) === normalizedSku,
+  );
+}
+
+function normalizeImportedSku(
+  value,
+) {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase();
+}
+
+function createExcelTemplate() {
+  const rows = [
+    {
+      "Item Name":
+        "Silver Ring",
+      SKU: "RG001",
+      Category: "Ring",
+      Material: "925 Silver",
+      Quantity: 1,
+      "Weight (g)": 4.25,
+      "Cost Price": 500,
+      "Selling Price": 900,
+      Notes: "Example item",
+    },
+  ];
+
+  const worksheet =
+    XLSX.utils.json_to_sheet(
+      rows,
+    );
+
+  worksheet["!cols"] = [
+    { wch: 24 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 30 },
+  ];
+
+  const workbook =
+    XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    worksheet,
+    "Inventory",
+  );
+
+  XLSX.writeFile(
+    workbook,
+    "925-jewellery-import-template.xlsx",
+  );
+}
+
+function exportInventoryToExcel(
+  items,
+) {
+  const rows = items.map(
+    (item) => ({
+      "Item Name":
+        item.name ?? "",
+      SKU:
+        item.sku ?? "",
+      Category:
+        item.category ?? "",
+      Material:
+        item.material ?? "",
+      Quantity:
+        Number(item.quantity) || 0,
+      "Weight (g)":
+        item.weight ?? "",
+      "Cost Price":
+        item.costPrice ?? "",
+      "Selling Price":
+        item.sellingPrice ?? "",
+      Notes:
+        item.notes ?? "",
+    }),
+  );
+
+  const worksheet =
+    XLSX.utils.json_to_sheet(
+      rows,
+    );
+
+  worksheet["!cols"] = [
+    { wch: 24 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 18 },
+    { wch: 30 },
+  ];
+
+  const workbook =
+    XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(
+    workbook,
+    worksheet,
+    "Inventory",
+  );
+
+  XLSX.writeFile(
+    workbook,
+    `925-jewellery-inventory-${new Date()
+      .toISOString()
+      .slice(0, 10)}.xlsx`,
+  );
 }
 
 function App() {
   const [session, setSession] =
     useState(null);
+
+  const [currentView, setCurrentView] =
+    useState("dashboard");
+
   const [isAuthLoading, setIsAuthLoading] =
     useState(true);
+
   const [isMfaVerified, setIsMfaVerified] =
     useState(false);
-  const [
-    isMfaEnrollmentOpen,
-    setIsMfaEnrollmentOpen,
-  ] = useState(false);
 
   const [items, setItems] =
     useState([]);
+
+  const [
+    customCategories,
+    setCustomCategories,
+  ] = useState(readCustomCategories);
+
+  const [
+    isCategoryModalOpen,
+    setIsCategoryModalOpen,
+  ] = useState(false);
+
+  const [
+    newCategoryName,
+    setNewCategoryName,
+  ] = useState("");
+
   const [isLoading, setIsLoading] =
     useState(true);
+
   const [isSaving, setIsSaving] =
     useState(false);
+
   const [isFormOpen, setIsFormOpen] =
     useState(false);
+
   const [
     editingItemId,
     setEditingItemId,
   ] = useState(null);
+
   const [form, setForm] =
     useState(emptyForm);
+
   const [error, setError] =
     useState("");
+
+  const [scannerError, setScannerError] =
+    useState("");
+
   const [searchTerm, setSearchTerm] =
     useState("");
+
   const [
     categoryFilter,
     setCategoryFilter,
@@ -581,10 +1161,12 @@ function App() {
     isScannerOpen,
     setIsScannerOpen,
   ] = useState(false);
+
   const [
     scannedItem,
     setScannedItem,
   ] = useState(null);
+
   const [
     barcodeItem,
     setBarcodeItem,
@@ -608,8 +1190,66 @@ function App() {
   const imageInputRef =
     useRef(null);
 
+  const excelInputRef =
+    useRef(null);
+
+  const [
+    isExcelImportOpen,
+    setIsExcelImportOpen,
+  ] = useState(false);
+
+  const [
+    isParsingExcel,
+    setIsParsingExcel,
+  ] = useState(false);
+
+  const [
+    isImportingExcel,
+    setIsImportingExcel,
+  ] = useState(false);
+
+  const [
+    excelRows,
+    setExcelRows,
+  ] = useState([]);
+
+  const [
+    excelErrors,
+    setExcelErrors,
+  ] = useState([]);
+
+  const [
+    excelFileName,
+    setExcelFileName,
+  ] = useState("");
+
+  const [
+    excelImportProgress,
+    setExcelImportProgress,
+  ] = useState(0);
+
+  const [
+    excelImportResult,
+    setExcelImportResult,
+  ] = useState(null);
+
   const isEditing =
     editingItemId !== null;
+
+  const allCategories = useMemo(
+    () =>
+      uniqueCategories([
+        ...BASE_CATEGORIES,
+        ...customCategories,
+        ...items.map(
+          (item) =>
+            String(
+              item.category ?? "",
+            ).trim(),
+        ),
+      ]),
+    [customCategories, items],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -620,8 +1260,7 @@ function App() {
       try {
         const {
           data: {
-            session:
-              currentSession,
+            session: currentSession,
           },
         } =
           await supabase.auth.getSession();
@@ -634,9 +1273,6 @@ function App() {
 
         if (!currentSession) {
           setIsMfaVerified(false);
-          setIsMfaEnrollmentOpen(
-            false,
-          );
           return;
         }
 
@@ -662,9 +1298,6 @@ function App() {
         if (!cancelled) {
           setSession(null);
           setIsMfaVerified(false);
-          setIsMfaEnrollmentOpen(
-            false,
-          );
         }
       } finally {
         if (!cancelled) {
@@ -690,9 +1323,6 @@ function App() {
 
           if (!currentSession) {
             setIsMfaVerified(false);
-            setIsMfaEnrollmentOpen(
-              false,
-            );
             return;
           }
 
@@ -704,16 +1334,12 @@ function App() {
 
               try {
                 const {
-                  data:
-                    assuranceData,
-                  error:
-                    assuranceError,
+                  data: assuranceData,
+                  error: assuranceError,
                 } =
                   await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
 
-                if (
-                  assuranceError
-                ) {
+                if (assuranceError) {
                   throw assuranceError;
                 }
 
@@ -723,16 +1349,12 @@ function App() {
                       "aal2",
                   );
                 }
-              } catch (
-                authError
-              ) {
+              } catch (authError) {
                 console.error(
                   authError,
                 );
 
-                if (
-                  !cancelled
-                ) {
+                if (!cancelled) {
                   setIsMfaVerified(
                     false,
                   );
@@ -749,6 +1371,55 @@ function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(
+      CUSTOM_CATEGORIES_KEY,
+      JSON.stringify(customCategories),
+    );
+  }, [customCategories]);
+
+  useEffect(() => {
+    const discoveredCategories =
+      items
+        .map((item) =>
+          String(
+            item.category ?? "",
+          ).trim(),
+        )
+        .filter(
+          (category) =>
+            category &&
+            !BASE_CATEGORIES.some(
+              (baseCategory) =>
+                baseCategory.toLowerCase() ===
+                category.toLowerCase(),
+            ),
+        );
+
+    if (discoveredCategories.length === 0) {
+      return;
+    }
+
+    setCustomCategories(
+      (currentCategories) => {
+        const merged =
+          uniqueCategories([
+            ...currentCategories,
+            ...discoveredCategories,
+          ]);
+
+        if (
+          merged.length ===
+          currentCategories.length
+        ) {
+          return currentCategories;
+        }
+
+        return merged;
+      },
+    );
+  }, [items]);
 
   useEffect(() => {
     if (
@@ -786,6 +1457,7 @@ function App() {
             await createInventoryItems(
               localItems,
             );
+
             databaseItems =
               await fetchInventoryItems();
           }
@@ -797,7 +1469,9 @@ function App() {
         }
 
         if (!cancelled) {
-          setItems(databaseItems);
+          setItems(
+            databaseItems,
+          );
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -824,31 +1498,37 @@ function App() {
     isMfaVerified,
   ]);
 
-  const filteredItems =
-    useMemo(
-      () =>
-        items.filter((item) => {
-          const matchesCategory =
-            categoryFilter ===
-              "All" ||
-            String(
-              item.category ?? "",
-            ) === categoryFilter;
+  useEffect(() => {
+    return () => {
+      revokeBlobPreview(
+        form.imagePreview,
+      );
+    };
+  }, [form.imagePreview]);
 
-          return (
-            matchesCategory &&
-            itemMatchesSearch(
-              item,
-              searchTerm,
-            )
-          );
-        }),
-      [
-        items,
-        searchTerm,
-        categoryFilter,
-      ],
-    );
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) => {
+        const matchesCategory =
+          categoryFilter === "All" ||
+          String(
+            item.category ?? "",
+          ) === categoryFilter;
+
+        return (
+          matchesCategory &&
+          itemMatchesSearch(
+            item,
+            searchTerm,
+          )
+        );
+      }),
+    [
+      items,
+      searchTerm,
+      categoryFilter,
+    ],
+  );
 
   const totals = useMemo(
     () =>
@@ -858,10 +1538,17 @@ function App() {
             Number(
               item.quantity,
             ) || 0;
+
+          const weight =
+            Number(
+              item.weight,
+            ) || 0;
+
           const costPrice =
             Number(
               item.costPrice,
             ) || 0;
+
           const sellingPrice =
             Number(
               item.sellingPrice,
@@ -871,10 +1558,16 @@ function App() {
             quantity:
               summary.quantity +
               quantity,
+
+            weight:
+              summary.weight +
+              quantity * weight,
+
             costValue:
               summary.costValue +
               quantity *
                 costPrice,
+
             sellingValue:
               summary.sellingValue +
               quantity *
@@ -883,6 +1576,7 @@ function App() {
         },
         {
           quantity: 0,
+          weight: 0,
           costValue: 0,
           sellingValue: 0,
         },
@@ -891,21 +1585,51 @@ function App() {
   );
 
   function resetForm() {
+    revokeBlobPreview(
+      form.imagePreview,
+    );
+
     setForm(emptyForm);
     setEditingItemId(null);
+
+    if (imageInputRef.current) {
+      imageInputRef.current.value =
+        "";
+    }
   }
 
   function openAddForm() {
     resetForm();
+
+    const category = "Ring";
+    const nextSku = getNextFormSku(
+      items,
+      category,
+    );
+
+    setForm({
+      ...emptyForm,
+      category,
+      sku: nextSku,
+    });
+
     setError("");
     setIsFormOpen(true);
   }
 
   function openEditForm(item) {
+    revokeBlobPreview(
+      form.imagePreview,
+    );
+
     setForm(
       getFormFromItem(item),
     );
-    setEditingItemId(item.id);
+
+    setEditingItemId(
+      item.id,
+    );
+
     setError("");
     setIsFormOpen(true);
   }
@@ -920,25 +1644,146 @@ function App() {
     setError("");
   }
 
+  function openCategoryCreator() {
+    setNewCategoryName("");
+    setIsCategoryModalOpen(true);
+    setError("");
+  }
+
+  function closeCategoryCreator() {
+    if (isSaving) {
+      return;
+    }
+
+    setIsCategoryModalOpen(false);
+    setNewCategoryName("");
+  }
+
+  function addCustomCategory() {
+    const categoryName =
+      newCategoryName.trim();
+
+    if (!categoryName) {
+      setError(
+        "Please enter a category name.",
+      );
+      return;
+    }
+
+    if (categoryName.length > 40) {
+      setError(
+        "Category name must be 40 characters or fewer.",
+      );
+      return;
+    }
+
+    const alreadyExists =
+      allCategories.some(
+        (category) =>
+          category.toLowerCase() ===
+          categoryName.toLowerCase(),
+      );
+
+    if (alreadyExists) {
+      setError(
+        "That category already exists.",
+      );
+      return;
+    }
+
+    setCustomCategories(
+      (currentCategories) =>
+        uniqueCategories([
+          ...currentCategories,
+          categoryName,
+        ]),
+    );
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      category: categoryName,
+      sku: getNextFormSku(
+        items,
+        categoryName,
+      ),
+    }));
+
+    setCategoryFilter(categoryName);
+    setIsCategoryModalOpen(false);
+    setNewCategoryName("");
+    setError("");
+  }
+
   function handleChange(event) {
     const {
       name,
       value,
     } = event.target;
 
-    setForm(
-      (currentForm) => ({
+    if (name === "sku") {
+      setForm((currentForm) => ({
         ...currentForm,
-        [name]: value,
-      }),
-    );
+        sku: value
+          .toUpperCase()
+          .replace(/\s+/g, "")
+          .replace(/[^A-Z0-9_-]/g, ""),
+      }));
+
+      setError("");
+      return;
+    }
+
+    if (name === "category") {
+      setForm((currentForm) => ({
+        ...currentForm,
+        category: value,
+        sku: getNextFormSku(
+          items,
+          value,
+        ),
+      }));
+
+      setError("");
+      return;
+    }
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      [name]: value,
+    }));
 
     setError("");
   }
 
-  function handleImageChange(
-    event,
-  ) {
+  function handleSkuBlur() {
+    setForm((currentForm) => {
+      const normalizedSku =
+        normalizeSkuValue(
+          currentForm.sku,
+          currentForm.category,
+        );
+
+      if (
+        !normalizedSku &&
+        !isEditing
+      ) {
+        return {
+          ...currentForm,
+          sku: getNextFormSku(
+            items,
+            currentForm.category,
+          ),
+        };
+      }
+
+      return {
+        ...currentForm,
+        sku: normalizedSku,
+      };
+    });
+  }
+
+  function handleImageChange(event) {
     const file =
       event.target.files?.[0];
 
@@ -946,47 +1791,57 @@ function App() {
       return;
     }
 
-    setForm(
-      (currentForm) => ({
-        ...currentForm,
-        imageFile: file,
-        imagePreview:
-          URL.createObjectURL(
-            file,
-          ),
-      }),
+    if (
+      ![
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+      ].includes(file.type)
+    ) {
+      setError(
+        "Please choose a JPG, PNG or WebP image.",
+      );
+
+      event.target.value = "";
+      return;
+    }
+
+    
+
+    const nextPreview =
+      URL.createObjectURL(file);
+
+    revokeBlobPreview(
+      form.imagePreview,
     );
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      imageFile: file,
+      imagePreview:
+        nextPreview,
+    }));
 
     setError("");
   }
 
   function removeSelectedImage() {
-    if (
-      form.imagePreview &&
-      form.imageFile &&
-      form.imagePreview.startsWith(
-        "blob:",
-      )
-    ) {
-      URL.revokeObjectURL(
-        form.imagePreview,
-      );
-    }
+    revokeBlobPreview(
+      form.imagePreview,
+    );
 
     if (imageInputRef.current) {
       imageInputRef.current.value =
         "";
     }
 
-    setForm(
-      (currentForm) => ({
-        ...currentForm,
-        imageFile: null,
-        imagePreview: "",
-        imageUrl: "",
-        imagePath: "",
-      }),
-    );
+    setForm((currentForm) => ({
+      ...currentForm,
+      imageFile: null,
+      imagePreview: "",
+      imageUrl: "",
+      imagePath: "",
+    }));
 
     setError("");
   }
@@ -994,11 +1849,16 @@ function App() {
   function validateForm() {
     const name =
       form.name.trim();
+
     const quantity =
       Number(form.quantity);
 
     if (!name) {
       return "Please enter an item name.";
+    }
+
+    if (!String(form.category ?? "").trim()) {
+      return "Please choose or add a category.";
     }
 
     if (
@@ -1011,47 +1871,40 @@ function App() {
     }
 
     if (
-      form.costPrice &&
-      Number.isNaN(
-        Number(
-          form.costPrice,
-        ),
+      form.costPrice !== "" &&
+      !Number.isFinite(
+        Number(form.costPrice),
       )
     ) {
       return "Please enter a valid cost price.";
     }
 
     if (
-      form.costPrice &&
-      Number(form.costPrice) <
-        0
+      form.costPrice !== "" &&
+      Number(form.costPrice) < 0
     ) {
       return "Cost price cannot be negative.";
     }
 
     if (
-      form.sellingPrice &&
-      Number.isNaN(
-        Number(
-          form.sellingPrice,
-        ),
+      form.sellingPrice !== "" &&
+      !Number.isFinite(
+        Number(form.sellingPrice),
       )
     ) {
       return "Please enter a valid selling price.";
     }
 
     if (
-      form.sellingPrice &&
-      Number(
-        form.sellingPrice,
-      ) < 0
+      form.sellingPrice !== "" &&
+      Number(form.sellingPrice) < 0
     ) {
       return "Selling price cannot be negative.";
     }
 
     if (
-      form.weight &&
-      Number.isNaN(
+      form.weight !== "" &&
+      !Number.isFinite(
         Number(form.weight),
       )
     ) {
@@ -1059,7 +1912,7 @@ function App() {
     }
 
     if (
-      form.weight &&
+      form.weight !== "" &&
       Number(form.weight) < 0
     ) {
       return "Weight cannot be negative.";
@@ -1069,34 +1922,81 @@ function App() {
   }
 
   async function saveNewItem() {
+    const normalizedSku =
+      normalizeSkuValue(
+        form.sku ||
+          getNextFormSku(
+            items,
+            form.category,
+          ),
+        form.category,
+      );
+
+    if (
+      isSkuAlreadyUsed(
+        items,
+        normalizedSku,
+      )
+    ) {
+      throw new Error(
+        `SKU "${normalizedSku}" is already in use. Please enter a different SKU.`,
+      );
+    }
+
+    const itemForm = {
+      ...form,
+      sku: normalizedSku,
+    };
+
     const newItem =
       await createInventoryItem(
-        form,
+        itemForm,
       );
 
     if (!form.imageFile) {
       return newItem;
     }
 
+    let uploadedImage = null;
+
     try {
-      const uploadedImage =
+      uploadedImage =
         await uploadInventoryImage(
           newItem.id,
           form.imageFile,
         );
 
-      return await updateInventoryItemImage(
-        newItem.id,
-        uploadedImage.imageUrl,
-        uploadedImage.imagePath,
-      );
+      const savedItem =
+        await updateInventoryItemImage(
+          newItem.id,
+          uploadedImage.imageUrl,
+          uploadedImage.imagePath,
+        );
+
+      return savedItem;
     } catch (imageError) {
+      if (uploadedImage?.imagePath) {
+        try {
+          await deleteInventoryImage(
+            uploadedImage.imagePath,
+          );
+        } catch (cleanupError) {
+          console.error(
+            "Unable to clean up uploaded image:",
+            cleanupError,
+          );
+        }
+      }
+
       try {
         await deleteInventoryItem(
           newItem.id,
         );
-      } catch {
-        // Keep the original image error visible.
+      } catch (cleanupError) {
+        console.error(
+          "Unable to clean up inventory item:",
+          cleanupError,
+        );
       }
 
       throw imageError;
@@ -1117,50 +2017,167 @@ function App() {
       );
     }
 
-    const updatedItem =
-      await updateInventoryItem(
-        editingItemId,
-        form,
+    const normalizedSku =
+      normalizeSkuValue(
+        form.sku ||
+          getNextFormSku(
+            items,
+            form.category,
+          ),
+        form.category,
       );
 
-    if (form.imageFile) {
-      const uploadedImage =
-        await uploadInventoryImage(
-          editingItemId,
-          form.imageFile,
-        );
-
-      const imageUpdatedItem =
-        await updateInventoryItemImage(
-          editingItemId,
-          uploadedImage.imageUrl,
-          uploadedImage.imagePath,
-        );
-
-      if (
-        currentItem.imagePath &&
-        currentItem.imagePath !==
-          uploadedImage.imagePath
-      ) {
-        try {
-          await deleteInventoryImage(
-            currentItem.imagePath,
-          );
-        } catch {
-          // The new image is already saved.
-        }
-      }
-
-      return imageUpdatedItem;
+    if (
+      isSkuAlreadyUsed(
+        items,
+        normalizedSku,
+        editingItemId,
+      )
+    ) {
+      throw new Error(
+        `SKU "${normalizedSku}" is already in use. Please enter a different SKU.`,
+      );
     }
+
+    const itemForm = {
+      ...form,
+      sku: normalizedSku,
+    };
+
+    const hasNewImage =
+      Boolean(form.imageFile);
 
     const imageWasRemoved =
       Boolean(
         currentItem.imagePath,
       ) &&
-      !form.imagePath;
+      !form.imagePath &&
+      !hasNewImage;
+
+    if (hasNewImage) {
+      let uploadedImage = null;
+
+      try {
+        uploadedImage =
+          await uploadInventoryImage(
+            editingItemId,
+            form.imageFile,
+          );
+
+        const updatedItem =
+          await updateInventoryItem(
+            editingItemId,
+            itemForm,
+          );
+
+        try {
+          const imageUpdatedItem =
+            await updateInventoryItemImage(
+              editingItemId,
+              uploadedImage.imageUrl,
+              uploadedImage.imagePath,
+            );
+
+          if (
+            currentItem.imagePath &&
+            currentItem.imagePath !==
+              uploadedImage.imagePath
+          ) {
+            try {
+              await deleteInventoryImage(
+                currentItem.imagePath,
+              );
+            } catch (cleanupError) {
+              console.error(
+                "Unable to remove old image:",
+                cleanupError,
+              );
+            }
+          }
+
+          return imageUpdatedItem;
+        } catch (imageMetadataError) {
+          try {
+            await updateInventoryItem(
+              editingItemId,
+              {
+                name:
+                  currentItem.name,
+                sku:
+                  currentItem.sku,
+                category:
+                  currentItem.category,
+                material:
+                  currentItem.material,
+                quantity:
+                  String(
+                    currentItem.quantity,
+                  ),
+                weight:
+                  currentItem.weight ??
+                  "",
+                costPrice:
+                  currentItem.costPrice ??
+                  "",
+                sellingPrice:
+                  currentItem.sellingPrice ??
+                  "",
+                notes:
+                  currentItem.notes ??
+                  "",
+              },
+            );
+          } catch (rollbackError) {
+            console.error(
+              "Unable to roll back inventory changes:",
+              rollbackError,
+            );
+          }
+
+          if (
+            uploadedImage.imagePath
+          ) {
+            try {
+              await deleteInventoryImage(
+                uploadedImage.imagePath,
+              );
+            } catch (cleanupError) {
+              console.error(
+                "Unable to clean up new image:",
+                cleanupError,
+              );
+            }
+          }
+
+          throw imageMetadataError;
+        }
+      } catch (saveError) {
+        if (
+          uploadedImage?.imagePath
+        ) {
+          try {
+            await deleteInventoryImage(
+              uploadedImage.imagePath,
+            );
+          } catch (cleanupError) {
+            console.error(
+              "Unable to clean up uploaded image:",
+              cleanupError,
+            );
+          }
+        }
+
+        throw saveError;
+      }
+    }
 
     if (imageWasRemoved) {
+      const updatedItem =
+        await updateInventoryItem(
+          editingItemId,
+          itemForm,
+        );
+
       await deleteInventoryItemImage(
         editingItemId,
       );
@@ -1169,8 +2186,11 @@ function App() {
         await deleteInventoryImage(
           currentItem.imagePath,
         );
-      } catch {
-        // The database no longer points to the removed image.
+      } catch (cleanupError) {
+        console.error(
+          "Unable to delete removed image:",
+          cleanupError,
+        );
       }
 
       return {
@@ -1179,6 +2199,12 @@ function App() {
         imagePath: "",
       };
     }
+
+    const updatedItem =
+      await updateInventoryItem(
+        editingItemId,
+        itemForm,
+      );
 
     return {
       ...updatedItem,
@@ -1191,9 +2217,7 @@ function App() {
     };
   }
 
-  async function handleSubmit(
-    event,
-  ) {
+  async function handleSubmit(event) {
     event.preventDefault();
 
     const validationError =
@@ -1210,14 +2234,39 @@ function App() {
     setError("");
 
     try {
+      const wasEditing =
+        isEditing;
+
+      const categoryName =
+        String(
+          form.category ?? "",
+        ).trim();
+
+      if (
+        categoryName &&
+        !BASE_CATEGORIES.some(
+          (baseCategory) =>
+            baseCategory.toLowerCase() ===
+            categoryName.toLowerCase(),
+        )
+      ) {
+        setCustomCategories(
+          (currentCategories) =>
+            uniqueCategories([
+              ...currentCategories,
+              categoryName,
+            ]),
+        );
+      }
+
       const savedItem =
-        isEditing
+        wasEditing
           ? await saveExistingItem()
           : await saveNewItem();
 
       setItems(
         (currentItems) => {
-          if (!isEditing) {
+          if (!wasEditing) {
             return [
               savedItem,
               ...currentItems,
@@ -1242,7 +2291,18 @@ function App() {
             : currentItem,
       );
 
-      closeForm();
+      revokeBlobPreview(
+        form.imagePreview,
+      );
+
+      if (imageInputRef.current) {
+        imageInputRef.current.value =
+          "";
+      }
+
+      setIsFormOpen(false);
+      setForm(emptyForm);
+      setEditingItemId(null);
     } catch (saveError) {
       setError(
         getErrorMessage(
@@ -1254,9 +2314,7 @@ function App() {
     }
   }
 
-  async function handleDelete(
-    item,
-  ) {
+  async function handleDelete(item) {
     const shouldDelete =
       window.confirm(
         `Delete "${item.name}" from your inventory?`,
@@ -1278,8 +2336,11 @@ function App() {
           await deleteInventoryImage(
             item.imagePath,
           );
-        } catch {
-          // The inventory record is already deleted.
+        } catch (cleanupError) {
+          console.error(
+            "Unable to delete inventory image:",
+            cleanupError,
+          );
         }
       }
 
@@ -1315,15 +2376,572 @@ function App() {
     }
   }
 
+  async function deleteSelectedItems() {
+    const selectedItems =
+      items.filter((item) =>
+        selectedLabelIds.includes(item.id),
+      );
+
+    if (selectedItems.length === 0) {
+      setError(
+        "Please select at least one item to delete.",
+      );
+      return;
+    }
+
+    const shouldDelete =
+      window.confirm(
+        `Delete ${selectedItems.length} selected item${
+          selectedItems.length === 1 ? "" : "s"
+        } from your inventory? This cannot be undone.`,
+      );
+
+    if (!shouldDelete) {
+      return;
+    }
+
+    setError("");
+
+    try {
+      for (const item of selectedItems) {
+        await deleteInventoryItem(item.id);
+
+        if (item.imagePath) {
+          try {
+            await deleteInventoryImage(item.imagePath);
+          } catch (cleanupError) {
+            console.error(
+              "Unable to delete inventory image:",
+              cleanupError,
+            );
+          }
+        }
+      }
+
+      const selectedIds = new Set(
+        selectedItems.map((item) => item.id),
+      );
+
+      setItems((currentItems) =>
+        currentItems.filter(
+          (item) => !selectedIds.has(item.id),
+        ),
+      );
+
+      setSelectedLabelIds((currentIds) =>
+        currentIds.filter(
+          (id) => !selectedIds.has(id),
+        ),
+      );
+
+      setScannedItem((currentItem) =>
+        currentItem &&
+        selectedIds.has(currentItem.id)
+          ? null
+          : currentItem,
+      );
+
+      closeLabelSelectionMode();
+    } catch (deleteError) {
+      setError(
+        getErrorMessage(deleteError),
+      );
+    }
+  }
+
+  function resetExcelImport() {
+    setExcelRows([]);
+    setExcelErrors([]);
+    setExcelFileName("");
+    setExcelImportProgress(0);
+    setExcelImportResult(null);
+
+    if (excelInputRef.current) {
+      excelInputRef.current.value = "";
+    }
+  }
+
+  function closeExcelImport() {
+    if (
+      isParsingExcel ||
+      isImportingExcel
+    ) {
+      return;
+    }
+
+    setIsExcelImportOpen(false);
+    resetExcelImport();
+  }
+
+  function openExcelImport() {
+    setError("");
+    resetExcelImport();
+    setIsExcelImportOpen(true);
+  }
+
+  function handleExcelFileButton() {
+    excelInputRef.current?.click();
+  }
+
+  async function handleExcelFileChange(
+    event,
+  ) {
+    const file =
+      event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setIsParsingExcel(true);
+    setError("");
+    setExcelImportResult(null);
+    setExcelFileName(file.name);
+    setExcelRows([]);
+    setExcelErrors([]);
+
+    try {
+      if (
+        file.size >
+        EXCEL_MAX_FILE_SIZE
+      ) {
+        throw new Error(
+          "Excel file must be 20 MB or smaller.",
+        );
+      }
+
+      const arrayBuffer =
+        await file.arrayBuffer();
+
+      const workbook =
+        XLSX.read(
+          arrayBuffer,
+          {
+            type: "array",
+            cellDates: false,
+          },
+        );
+
+      const firstSheetName =
+        workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        throw new Error(
+          "The Excel file does not contain a worksheet.",
+        );
+      }
+
+      const worksheet =
+        workbook.Sheets[
+          firstSheetName
+        ];
+
+      const rawRows =
+        XLSX.utils.sheet_to_json(
+          worksheet,
+          {
+            defval: "",
+            raw: false,
+          },
+        );
+
+      if (
+        rawRows.length === 0
+      ) {
+        throw new Error(
+          "The Excel worksheet is empty.",
+        );
+      }
+
+      const headers =
+        Object.keys(
+          rawRows[0],
+        );
+
+      const columns = {
+        name: findExcelColumn(
+          headers,
+          EXCEL_COLUMN_ALIASES.name,
+        ),
+        sku: findExcelColumn(
+          headers,
+          EXCEL_COLUMN_ALIASES.sku,
+        ),
+        category:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.category,
+          ),
+        material:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.material,
+          ),
+        quantity:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.quantity,
+          ),
+        weight:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.weight,
+          ),
+        costPrice:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.costPrice,
+          ),
+        sellingPrice:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.sellingPrice,
+          ),
+        notes:
+          findExcelColumn(
+            headers,
+            EXCEL_COLUMN_ALIASES.notes,
+          ),
+      };
+
+      if (!columns.name) {
+        throw new Error(
+          "The Excel file must contain an Item Name or Name column.",
+        );
+      }
+
+      const existingSkus =
+        new Set(
+          items
+            .map((item) =>
+              normalizeImportedSku(
+                item.sku,
+              ),
+            )
+            .filter(Boolean),
+        );
+
+      const importedSkus =
+        new Set();
+
+      const generatedCounters =
+        new Map();
+
+      const parsedRows = [];
+      const errors = [];
+
+      rawRows.forEach(
+        (rawRow, index) => {
+          const rowNumber =
+            index + 2;
+
+          try {
+            const name =
+              String(
+                getExcelCell(
+                  rawRow,
+                  columns.name,
+                ) ?? "",
+              ).trim();
+
+            if (!name) {
+              throw new Error(
+                `Item Name is required on row ${rowNumber}.`,
+              );
+            }
+
+            const category =
+              String(
+                getExcelCell(
+                  rawRow,
+                  columns.category,
+                ) ?? "",
+              ).trim() ||
+              "Other";
+
+            const material =
+              String(
+                getExcelCell(
+                  rawRow,
+                  columns.material,
+                ) ?? "",
+              ).trim() ||
+              "925 Silver";
+
+            const quantityValue =
+              parseExcelNumber(
+                getExcelCell(
+                  rawRow,
+                  columns.quantity,
+                ),
+                "Quantity",
+                rowNumber,
+                {
+                  integer: true,
+                  minimum: 1,
+                  optional: true,
+                },
+              );
+
+            const quantity =
+              quantityValue ?? 1;
+
+            const weight =
+              parseExcelNumber(
+                getExcelCell(
+                  rawRow,
+                  columns.weight,
+                ),
+                "Weight",
+                rowNumber,
+                {
+                  minimum: 0,
+                  optional: true,
+                },
+              );
+
+            const costPrice =
+              parseExcelNumber(
+                getExcelCell(
+                  rawRow,
+                  columns.costPrice,
+                ),
+                "Cost Price",
+                rowNumber,
+                {
+                  minimum: 0,
+                  optional: true,
+                },
+              );
+
+            const sellingPrice =
+              parseExcelNumber(
+                getExcelCell(
+                  rawRow,
+                  columns.sellingPrice,
+                ),
+                "Selling Price",
+                rowNumber,
+                {
+                  minimum: 0,
+                  optional: true,
+                },
+              );
+
+            let sku =
+              normalizeImportedSku(
+                getExcelCell(
+                  rawRow,
+                  columns.sku,
+                ),
+              );
+
+            if (!sku) {
+              sku =
+                buildGeneratedSku(
+                  items,
+                  category,
+                  generatedCounters,
+                );
+            }
+
+            if (
+              importedSkus.has(sku)
+            ) {
+              throw new Error(
+                `Duplicate SKU "${sku}" found in the Excel file on row ${rowNumber}.`,
+              );
+            }
+
+            if (
+              existingSkus.has(sku)
+            ) {
+              throw new Error(
+                `SKU "${sku}" already exists in your inventory.`,
+              );
+            }
+
+            importedSkus.add(sku);
+
+            parsedRows.push({
+              sourceRow:
+                rowNumber,
+              name,
+              sku,
+              category,
+              material,
+              quantity:
+                String(quantity),
+              weight:
+                weight === null
+                  ? ""
+                  : String(weight),
+              costPrice:
+                costPrice === null
+                  ? ""
+                  : String(costPrice),
+              sellingPrice:
+                sellingPrice === null
+                  ? ""
+                  : String(
+                      sellingPrice,
+                    ),
+              notes:
+                String(
+                  getExcelCell(
+                    rawRow,
+                    columns.notes,
+                  ) ?? "",
+                ).trim(),
+            });
+          } catch (rowError) {
+            errors.push(
+              rowError.message,
+            );
+          }
+        },
+      );
+
+      setExcelRows(
+        parsedRows,
+      );
+
+      setExcelErrors(
+        errors,
+      );
+    } catch (excelError) {
+      setExcelErrors([
+        getErrorMessage(
+          excelError,
+        ),
+      ]);
+    } finally {
+      setIsParsingExcel(false);
+    }
+  }
+
+  async function importExcelRows() {
+    if (
+      excelRows.length === 0
+    ) {
+      setError(
+        "There are no valid rows to import.",
+      );
+      return;
+    }
+
+    if (
+      excelErrors.length > 0
+    ) {
+      setError(
+        "Please fix all Excel errors before importing.",
+      );
+      return;
+    }
+
+    setIsImportingExcel(true);
+    setError("");
+    setExcelImportProgress(0);
+    setExcelImportResult(null);
+
+    try {
+      let importedCount = 0;
+      const importedItems = [];
+
+      for (
+        let start = 0;
+        start < excelRows.length;
+        start += EXCEL_BATCH_SIZE
+      ) {
+        const batch =
+          excelRows.slice(
+            start,
+            start +
+              EXCEL_BATCH_SIZE,
+          );
+
+        const createdItems =
+          await createInventoryItems(
+            batch,
+          );
+
+        importedItems.push(
+          ...createdItems,
+        );
+
+        importedCount +=
+          batch.length;
+
+        setExcelImportProgress(
+          Math.round(
+            (importedCount /
+              excelRows.length) *
+              100,
+          ),
+        );
+      }
+
+      setItems(
+        (currentItems) => [
+          ...importedItems,
+          ...currentItems,
+        ],
+      );
+
+      setExcelImportResult({
+        success: true,
+        imported:
+          importedCount,
+      });
+    } catch (importError) {
+      setExcelImportResult({
+        success: false,
+        imported: 0,
+        error:
+          getErrorMessage(
+            importError,
+          ),
+      });
+    } finally {
+      setIsImportingExcel(false);
+    }
+  }
+
+  function exportCurrentInventory() {
+    try {
+      exportInventoryToExcel(
+        items,
+      );
+      setError("");
+    } catch (exportError) {
+      setError(
+        getErrorMessage(
+          exportError,
+        ),
+      );
+    }
+  }
+
+  function downloadExcelTemplate() {
+    try {
+      createExcelTemplate();
+      setError("");
+    } catch (templateError) {
+      setError(
+        getErrorMessage(
+          templateError,
+        ),
+      );
+    }
+  }
+
   function clearFilters() {
     setSearchTerm("");
-    setCategoryFilter(
-      "All",
-    );
+    setCategoryFilter("All");
   }
 
   function openScanner() {
-    setError("");
+    setScannerError("");
     setScannedItem(null);
     setIsScannerOpen(true);
   }
@@ -1431,8 +3049,7 @@ function App() {
     setError("");
 
     try {
-      const zip =
-        new JSZip();
+      const zip = new JSZip();
 
       for (const item of selectedItems) {
         const labelBlob =
@@ -1449,11 +3066,9 @@ function App() {
       }
 
       const zipBlob =
-        await zip.generateAsync(
-          {
-            type: "blob",
-          },
-        );
+        await zip.generateAsync({
+          type: "blob",
+        });
 
       downloadBlob(
         zipBlob,
@@ -1461,9 +3076,7 @@ function App() {
       );
 
       closeLabelSelectionMode();
-    } catch (
-      downloadError
-    ) {
+    } catch (downloadError) {
       console.error(
         downloadError,
       );
@@ -1488,7 +3101,7 @@ function App() {
           );
 
         if (!normalizedCode) {
-          setError(
+          setScannerError(
             "The scanner returned an empty barcode.",
           );
           return;
@@ -1504,20 +3117,18 @@ function App() {
           );
 
         if (!matchedItem) {
-          setError(
+          setScannerError(
             `No inventory item was found for SKU "${scannedCode}".`,
           );
           setScannedItem(null);
           return;
         }
 
-        setError("");
+        setScannerError("");
         setScannedItem(
           matchedItem,
         );
-        setIsScannerOpen(
-          false,
-        );
+        setIsScannerOpen(false);
       },
       [items],
     );
@@ -1536,9 +3147,8 @@ function App() {
 
     setScannedItem(null);
     setIsScannerOpen(false);
-    openEditForm(
-      itemToEdit,
-    );
+    setCurrentView("inventory");
+    openEditForm(itemToEdit);
   }
 
   async function handleLogout() {
@@ -1559,10 +3169,17 @@ function App() {
 
     setSession(null);
     setIsMfaVerified(false);
-    setIsMfaEnrollmentOpen(
-      false,
-    );
+    setCurrentView("dashboard");
     setItems([]);
+    setScannerError("");
+    setScannedItem(null);
+    setBarcodeItem(null);
+    setIsScannerOpen(false);
+    setIsFormOpen(false);
+    setIsCategoryModalOpen(false);
+    setNewCategoryName("");
+    closeLabelSelectionMode();
+    resetForm();
   }
 
   if (isAuthLoading) {
@@ -1598,44 +3215,44 @@ function App() {
           setIsMfaVerified(
             false,
           );
-          setIsMfaEnrollmentOpen(
-            false,
-          );
         }}
       />
     );
   }
 
   if (!isMfaVerified) {
-    if (
-      isMfaEnrollmentOpen
-    ) {
-      return (
-        <MfaEnroll
-          onEnrolled={() => {
-            setIsMfaEnrollmentOpen(
-              false,
-            );
-            setIsMfaVerified(
-              true,
-            );
-          }}
-        />
-      );
-    }
-
     return (
       <MfaVerify
         onVerified={() => {
           setIsMfaVerified(
             true,
           );
+          setCurrentView("dashboard");
         }}
-        onEnroll={() => {
-          setIsMfaEnrollmentOpen(
-            true,
-          );
+      />
+    );
+  }
+
+  if (currentView === "dashboard") {
+    return (
+      <Dashboard
+        items={items}
+        categories={allCategories}
+        onOpenInventory={() => {
+          setCurrentView("inventory");
         }}
+        onScanSku={openScanner}
+        onBarcodeScan={handleBarcodeScan}
+        isScannerOpen={isScannerOpen}
+        scannerError={scannerError}
+        scannedItem={scannedItem}
+        onCloseScanner={closeScanner}
+        onCloseScanResult={closeScanResult}
+        onEditScannedItem={editScannedItem}
+        onClearScannerError={() => {
+          setScannerError("");
+        }}
+        onLogout={handleLogout}
       />
     );
   }
@@ -1662,15 +3279,15 @@ function App() {
             <button
               className="secondary-button"
               type="button"
-              onClick={
-                openScanner
-              }
+              onClick={() => {
+                setCurrentView("dashboard");
+              }}
               disabled={
                 isLoading ||
                 isSaving
               }
             >
-              Scan SKU
+              Dashboard
             </button>
 
             <button
@@ -1686,6 +3303,112 @@ function App() {
             >
               Add Item
             </button>
+
+            <details className="excel-menu">
+              <summary
+                className="excel-menu-trigger"
+              >
+                Excel
+              </summary>
+
+              <div className="excel-menu-panel">
+                <button
+                  className="excel-menu-item"
+                  type="button"
+                  onClick={(event) => {
+                    openExcelImport();
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                  }}
+                  disabled={
+                    isLoading ||
+                    isSaving ||
+                    isImportingExcel
+                  }
+                >
+                  <span
+                    className="excel-menu-item-icon"
+                    aria-hidden="true"
+                  >
+                    ↓
+                  </span>
+
+                  <span className="excel-menu-item-content">
+                    <strong>
+                      Import Excel
+                    </strong>
+                    <span>
+                      Add inventory from an Excel file
+                    </span>
+                  </span>
+                </button>
+
+                <button
+                  className="excel-menu-item"
+                  type="button"
+                  onClick={(event) => {
+                    exportCurrentInventory();
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                  }}
+                  disabled={
+                    isLoading ||
+                    isSaving ||
+                    items.length === 0
+                  }
+                >
+                  <span
+                    className="excel-menu-item-icon"
+                    aria-hidden="true"
+                  >
+                    ↑
+                  </span>
+
+                  <span className="excel-menu-item-content">
+                    <strong>
+                      Export Excel
+                    </strong>
+                    <span>
+                      Download your current inventory
+                    </span>
+                  </span>
+                </button>
+
+                <button
+                  className="excel-menu-item"
+                  type="button"
+                  onClick={(event) => {
+                    downloadExcelTemplate();
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                  }}
+                  disabled={
+                    isLoading ||
+                    isSaving ||
+                    isImportingExcel
+                  }
+                >
+                  <span
+                    className="excel-menu-item-icon"
+                    aria-hidden="true"
+                  >
+                    □
+                  </span>
+
+                  <span className="excel-menu-item-content">
+                    <strong>
+                      Download Template
+                    </strong>
+                    <span>
+                      Get the Excel import format
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </details>
 
             <button
               className="secondary-button"
@@ -1712,8 +3435,7 @@ function App() {
           </section>
         ) : (
           <>
-            {items.length >
-              0 && (
+            {items.length > 0 && (
               <section
                 className="summary-grid"
                 aria-label="Inventory summary"
@@ -1734,16 +3456,13 @@ function App() {
                   </p>
 
                   <strong>
-                    {
-                      totals.quantity
-                    }
+                    {totals.quantity}
                   </strong>
                 </div>
 
                 <div className="summary-card">
                   <p>
-                    Stock Cost
-                    Value
+                    Stock Cost Value
                   </p>
 
                   <strong>
@@ -1767,19 +3486,17 @@ function App() {
               </section>
             )}
 
-            {items.length ===
-            0 ? (
+            {items.length === 0 ? (
               <section className="empty-state">
                 <h2>
-                  No inventory
-                  items yet
+                  No inventory items
+                  yet
                 </h2>
 
                 <p>
-                  Your jewellery
-                  items will appear
-                  here once you add
-                  your first item.
+                  Your jewellery items
+                  will appear here once
+                  you add your first item.
                 </p>
               </section>
             ) : (
@@ -1852,6 +3569,26 @@ function App() {
                       </button>
 
                       <button
+                        className="delete-button bulk-delete-button"
+                        type="button"
+                        onClick={
+                          deleteSelectedItems
+                        }
+                        disabled={
+                          selectedLabelIds.length ===
+                            0 ||
+                          isSaving ||
+                          isDownloadingLabels
+                        }
+                      >
+                        Delete{" "}
+                        {selectedLabelIds.length > 0
+                          ? selectedLabelIds.length
+                          : ""}{" "}
+                        Selected
+                      </button>
+
+                      <button
                         className="primary-button"
                         type="button"
                         onClick={
@@ -1903,9 +3640,21 @@ function App() {
                   </div>
 
                   <div className="filter-box">
-                    <label htmlFor="category-filter">
-                      Category
-                    </label>
+                    <div className="category-filter-label">
+                      <label htmlFor="category-filter">
+                        Category
+                      </label>
+
+                      <button
+                        className="add-category-button"
+                        type="button"
+                        onClick={
+                          openCategoryCreator
+                        }
+                      >
+                        + Add Category
+                      </button>
+                    </div>
 
                     <select
                       id="category-filter"
@@ -1914,18 +3663,28 @@ function App() {
                       }
                       onChange={(
                         event,
-                      ) =>
+                      ) => {
+                        const value =
+                          event.target.value;
+
+                        if (
+                          value ===
+                          ADD_CATEGORY_VALUE
+                        ) {
+                          openCategoryCreator();
+                          return;
+                        }
+
                         setCategoryFilter(
-                          event.target
-                            .value,
-                        )
-                      }
+                          value,
+                        );
+                      }}
                     >
                       <option value="All">
                         All categories
                       </option>
 
-                      {categories.map(
+                      {allCategories.map(
                         (
                           category,
                         ) => (
@@ -1943,6 +3702,7 @@ function App() {
                           </option>
                         ),
                       )}
+
                     </select>
                   </div>
 
@@ -1989,9 +3749,7 @@ function App() {
                 ) : (
                   <div className="item-grid">
                     {filteredItems.map(
-                      (
-                        item,
-                      ) => {
+                      (item) => {
                         const isSelected =
                           selectedLabelIds.includes(
                             item.id,
@@ -2048,9 +3806,7 @@ function App() {
                                 </p>
 
                                 <h3>
-                                  {
-                                    item.name
-                                  }
+                                  {item.name}
                                 </h3>
                               </div>
 
@@ -2092,7 +3848,12 @@ function App() {
                                 </dt>
 
                                 <dd>
-                                  {item.costPrice
+                                  {item.costPrice !==
+                                    null &&
+                                  item.costPrice !==
+                                    undefined &&
+                                  item.costPrice !==
+                                    ""
                                     ? formatCurrency(
                                         Number(
                                           item.costPrice,
@@ -2120,7 +3881,12 @@ function App() {
                                 </dt>
 
                                 <dd>
-                                  {item.sellingPrice
+                                  {item.sellingPrice !==
+                                    null &&
+                                  item.sellingPrice !==
+                                    undefined &&
+                                  item.sellingPrice !==
+                                    ""
                                     ? formatCurrency(
                                         Number(
                                           item.sellingPrice,
@@ -2204,6 +3970,748 @@ function App() {
               {error}
             </p>
           )}
+
+        {isExcelImportOpen && (
+          <div
+            className="modal-backdrop"
+            onMouseDown={(event) => {
+              if (
+                event.target ===
+                  event.currentTarget &&
+                !isParsingExcel &&
+                !isImportingExcel
+              ) {
+                closeExcelImport();
+              }
+            }}
+          >
+            <section
+              className="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="excel-import-title"
+            >
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">
+                    Inventory
+                  </p>
+
+                  <h2 id="excel-import-title">
+                    Import Excel
+                  </h2>
+
+                  <p>
+                    Import large inventory files safely in batches.
+                  </p>
+                </div>
+
+                <button
+                  className="close-button"
+                  type="button"
+                  aria-label="Close Excel import"
+                  onClick={closeExcelImport}
+                  disabled={
+                    isParsingExcel ||
+                    isImportingExcel
+                  }
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="form-grid">
+                <div>
+                  <label>
+                    Excel File
+                  </label>
+
+                  <input
+                    ref={excelInputRef}
+                    className="image-file-input"
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={
+                      handleExcelFileChange
+                    }
+                  />
+
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={
+                      handleExcelFileButton
+                    }
+                    disabled={
+                      isParsingExcel ||
+                      isImportingExcel
+                    }
+                  >
+                    Choose Excel File
+                  </button>
+
+                  {excelFileName && (
+                    <p
+                      style={{
+                        marginTop: "10px",
+                        color: "#555",
+                        fontSize: "14px",
+                      }}
+                    >
+                      {excelFileName}
+                    </p>
+                  )}
+
+                  <small
+                    style={{
+                      display: "block",
+                      marginTop: "8px",
+                      color: "#777",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Required column: Item Name.
+                    SKU is optional; blank SKUs are generated automatically.
+                    Quantity defaults to 1.
+                  </small>
+                </div>
+
+                <div>
+                  <p
+                    style={{
+                      margin: 0,
+                      color: "#303030",
+                      fontSize: "14px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Supported columns
+                  </p>
+
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      color: "#777",
+                      fontSize: "13px",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    Item Name · SKU · Category · Material · Quantity ·
+                    Weight (g) · Cost Price · Selling Price · Notes
+                  </p>
+                </div>
+
+              </div>
+
+              {isParsingExcel && (
+                <div
+                  style={{
+                    marginTop: "20px",
+                    padding: "14px",
+                    borderRadius: "10px",
+                    background: "#faf9f7",
+                    color: "#555",
+                  }}
+                >
+                  Reading and validating the Excel file...
+                </div>
+              )}
+
+              {!isParsingExcel &&
+                excelFileName && (
+                  <div
+                    style={{
+                      marginTop: "20px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: "12px",
+                        marginBottom: "10px",
+                      }}
+                    >
+                      <strong>
+                        Preview
+                      </strong>
+
+                      <span
+                        style={{
+                          color: "#777",
+                          fontSize: "13px",
+                        }}
+                      >
+                        Showing first{" "}
+                        {Math.min(
+                          excelRows.length,
+                          EXCEL_PREVIEW_LIMIT,
+                        )}{" "}
+                        valid rows
+                      </span>
+                    </div>
+
+                    {excelErrors.length >
+                      0 && (
+                      <div
+                        style={{
+                          marginBottom: "16px",
+                          padding: "14px",
+                          borderRadius: "10px",
+                          background: "#fff1ef",
+                          color: "#a24b3b",
+                          fontSize: "13px",
+                          lineHeight: 1.5,
+                          maxHeight: "180px",
+                          overflowY: "auto",
+                        }}
+                      >
+                        <strong>
+                          {excelErrors.length}{" "}
+                          error
+                          {excelErrors.length ===
+                          1
+                            ? ""
+                            : "s"}
+                        </strong>
+
+                        <ul
+                          style={{
+                            margin:
+                              "8px 0 0",
+                            paddingLeft:
+                              "20px",
+                          }}
+                        >
+                          {excelErrors
+                            .slice(
+                              0,
+                              50,
+                            )
+                            .map(
+                              (
+                                excelError,
+                                index,
+                              ) => (
+                                <li
+                                  key={
+                                    `${excelError}-${index}`
+                                  }
+                                >
+                                  {
+                                    excelError
+                                  }
+                                </li>
+                              ),
+                            )}
+                        </ul>
+
+                        {excelErrors.length >
+                          50 && (
+                          <p>
+                            Showing first 50 errors.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {excelRows.length >
+                      0 && (
+                      <div
+                        style={{
+                          overflowX:
+                            "auto",
+                          border:
+                            "1px solid #e3ded8",
+                          borderRadius:
+                            "10px",
+                        }}
+                      >
+                        <table
+                          style={{
+                            width: "100%",
+                            minWidth:
+                              "850px",
+                            borderCollapse:
+                              "collapse",
+                            fontSize:
+                              "12px",
+                          }}
+                        >
+                          <thead>
+                            <tr>
+                              {[
+                                "Row",
+                                "Item Name",
+                                "SKU",
+                                "Category",
+                                "Qty",
+                                "Weight",
+                                "Cost",
+                                "Selling",
+                              ].map(
+                                (
+                                  heading,
+                                ) => (
+                                  <th
+                                    key={
+                                      heading
+                                    }
+                                    style={{
+                                      padding:
+                                        "10px",
+                                      textAlign:
+                                        "left",
+                                      borderBottom:
+                                        "1px solid #e3ded8",
+                                      whiteSpace:
+                                        "nowrap",
+                                    }}
+                                  >
+                                    {
+                                      heading
+                                    }
+                                  </th>
+                                ),
+                              )}
+                            </tr>
+                          </thead>
+
+                          <tbody>
+                            {excelRows
+                              .slice(
+                                0,
+                                EXCEL_PREVIEW_LIMIT,
+                              )
+                              .map(
+                                (
+                                  row,
+                                ) => (
+                                  <tr
+                                    key={
+                                      row.sourceRow
+                                    }
+                                  >
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.sourceRow
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.name
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.sku
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.category
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.quantity
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.weight ||
+                                        "—"
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.costPrice ||
+                                        "—"
+                                      }
+                                    </td>
+
+                                    <td
+                                      style={{
+                                        padding:
+                                          "9px 10px",
+                                        borderBottom:
+                                          "1px solid #f0eeeb",
+                                      }}
+                                    >
+                                      {
+                                        row.sellingPrice ||
+                                        "—"
+                                      }
+                                    </td>
+                                  </tr>
+                                ),
+                              )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {excelRows.length >
+                      0 && (
+                      <p
+                        style={{
+                          margin:
+                            "12px 0 0",
+                          color: "#777",
+                          fontSize: "13px",
+                        }}
+                      >
+                        {excelRows.length.toLocaleString(
+                          "en-IN",
+                        )}{" "}
+                        valid row
+                        {excelRows.length ===
+                        1
+                          ? ""
+                          : "s"}{" "}
+                        ready to import.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+              {isImportingExcel && (
+                <div
+                  style={{
+                    marginTop: "20px",
+                    padding: "14px",
+                    borderRadius: "10px",
+                    background: "#faf9f7",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: "8px",
+                      color: "#555",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <span>
+                      Importing inventory...
+                    </span>
+
+                    <strong>
+                      {
+                        excelImportProgress
+                      }
+                      %
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "8px",
+                      overflow: "hidden",
+                      borderRadius: "999px",
+                      background: "#e5e1dc",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${excelImportProgress}%`,
+                        height: "100%",
+                        background: "#8a6d46",
+                        transition:
+                          "width 0.2s ease",
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {excelImportResult && (
+                <div
+                  style={{
+                    marginTop: "20px",
+                    padding: "14px",
+                    borderRadius: "10px",
+                    background:
+                      excelImportResult.success
+                        ? "#f2f8f2"
+                        : "#fff1ef",
+                    color:
+                      excelImportResult.success
+                        ? "#416b45"
+                        : "#a24b3b",
+                    fontSize: "14px",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {excelImportResult.success
+                    ? `Successfully imported ${excelImportResult.imported.toLocaleString(
+                        "en-IN",
+                      )} item${
+                        excelImportResult.imported ===
+                        1
+                          ? ""
+                          : "s"
+                      }.`
+                    : `Import failed: ${excelImportResult.error}`}
+                </div>
+              )}
+
+              <div className="form-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={
+                    closeExcelImport
+                  }
+                  disabled={
+                    isParsingExcel ||
+                    isImportingExcel
+                  }
+                >
+                  {excelImportResult?.success
+                    ? "Close"
+                    : "Cancel"}
+                </button>
+
+                {!excelImportResult?.success && (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={
+                      importExcelRows
+                    }
+                    disabled={
+                      isParsingExcel ||
+                      isImportingExcel ||
+                      excelRows.length ===
+                        0 ||
+                      excelErrors.length >
+                        0
+                    }
+                  >
+                    {isImportingExcel
+                      ? "Importing..."
+                      : `Import ${
+                          excelRows.length.toLocaleString(
+                            "en-IN",
+                          )
+                        } Items`}
+                  </button>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {isCategoryModalOpen && (
+          <div
+            className="modal-backdrop"
+            onMouseDown={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                !isSaving
+              ) {
+                closeCategoryCreator();
+              }
+            }}
+          >
+            <section
+              className="modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="category-creator-title"
+            >
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">
+                    Inventory
+                  </p>
+
+                  <h2 id="category-creator-title">
+                    Add New Category
+                  </h2>
+
+                  <p>
+                    Enter the category name. The SKU prefix and
+                    next SKU number will be generated automatically.
+                  </p>
+                </div>
+
+                <button
+                  className="close-button"
+                  type="button"
+                  aria-label="Close category dialog"
+                  onClick={closeCategoryCreator}
+                  disabled={isSaving}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="form-grid">
+                <label>
+                  Category Name <span>*</span>
+
+                  <input
+                    type="text"
+                    placeholder="e.g. Anklet"
+                    value={newCategoryName}
+                    onChange={(event) => {
+                      setNewCategoryName(
+                        event.target.value,
+                      );
+                      setError("");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addCustomCategory();
+                      }
+                    }}
+                    autoFocus
+                    maxLength={40}
+                  />
+                </label>
+
+                <div
+                  style={{
+                    padding: "14px 16px",
+                    borderRadius: "10px",
+                    background: "#faf9f7",
+                    border: "1px solid #e3ded8",
+                    alignSelf: "end",
+                  }}
+                >
+                  <p
+                    style={{
+                      margin: 0,
+                      color: "#777",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Automatic SKU
+                  </p>
+
+                  <strong
+                    style={{
+                      display: "block",
+                      marginTop: "6px",
+                      color: "#8a6d46",
+                      fontSize: "22px",
+                    }}
+                  >
+                    {newCategoryName.trim()
+                      ? getNextFormSku(
+                          items,
+                          newCategoryName.trim(),
+                        )
+                      : "—"}
+                  </strong>
+
+                  <small
+                    style={{
+                      display: "block",
+                      marginTop: "5px",
+                      color: "#777",
+                    }}
+                  >
+                    The prefix uses the first two letters of the
+                    category.
+                  </small>
+                </div>
+              </div>
+
+              {error && (
+                <p className="form-error">
+                  {error}
+                </p>
+              )}
+
+              <div className="form-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={closeCategoryCreator}
+                  disabled={isSaving}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={addCustomCategory}
+                  disabled={
+                    isSaving ||
+                    !newCategoryName.trim()
+                  }
+                >
+                  Add Category
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {isFormOpen && (
           <div
@@ -2290,13 +4798,18 @@ function App() {
                     <input
                       name="sku"
                       type="text"
-                      placeholder="e.g. SR001"
+                      placeholder="e.g. RG001 or 12"
                       value={
                         form.sku
                       }
                       onChange={
                         handleChange
                       }
+                      onBlur={
+                        handleSkuBlur
+                      }
+                      autoCapitalize="characters"
+                      spellCheck={false}
                     />
                   </label>
 
@@ -2312,7 +4825,7 @@ function App() {
                         handleChange
                       }
                     >
-                      {categories.map(
+                      {allCategories.map(
                         (
                           category,
                         ) => (
@@ -2331,6 +4844,7 @@ function App() {
                         ),
                       )}
                     </select>
+
                   </label>
 
                   <label>
@@ -2509,7 +5023,7 @@ function App() {
 
                     <small className="image-upload-help">
                       JPG, PNG or WebP ·
-                      maximum 5 MB
+                      image will be compressed automatically
                     </small>
                   </div>
                 </div>
@@ -2553,191 +5067,15 @@ function App() {
           </div>
         )}
 
-        {isScannerOpen && (
-          <BarcodeScanner
-            onScan={
-              handleBarcodeScan
-            }
-            onClose={
-              closeScanner
-            }
-          />
-        )}
-
         {barcodeItem && (
           <BarcodeGenerator
-            item={
-              barcodeItem
-            }
+            item={barcodeItem}
             onClose={
               closeBarcode
             }
           />
         )}
 
-        {scannedItem && (
-          <div className="scanner-result-backdrop">
-            <section
-              className="scanner-result"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="scanner-result-title"
-            >
-              <div className="scanner-result-header">
-                <div>
-                  <p className="eyebrow">
-                    Barcode Found
-                  </p>
-
-                  <h2 id="scanner-result-title">
-                    {
-                      scannedItem.name
-                    }
-                  </h2>
-                </div>
-
-                <button
-                  className="close-button"
-                  type="button"
-                  aria-label="Close scan result"
-                  onClick={
-                    closeScanResult
-                  }
-                >
-                  ×
-                </button>
-              </div>
-
-              {scannedItem.imageUrl && (
-                <div className="scanner-result-image">
-                  <img
-                    src={
-                      scannedItem.imageUrl
-                    }
-                    alt={`${scannedItem.name} product`}
-                  />
-                </div>
-              )}
-
-              <dl className="scanner-result-details">
-                <div>
-                  <dt>SKU</dt>
-
-                  <dd>
-                    {
-                      scannedItem.sku ||
-                      "—"
-                    }
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>Category</dt>
-
-                  <dd>
-                    {
-                      scannedItem.category
-                    }
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>Material</dt>
-
-                  <dd>
-                    {
-                      scannedItem.material
-                    }
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>Quantity</dt>
-
-                  <dd>
-                    {
-                      scannedItem.quantity
-                    }
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>Weight</dt>
-
-                  <dd>
-                    {formatWeight(
-                      scannedItem.weight,
-                    )}
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>Cost</dt>
-
-                  <dd>
-                    {scannedItem.costPrice
-                      ? formatCurrency(
-                          Number(
-                            scannedItem.costPrice,
-                          ),
-                        )
-                      : "—"}
-                  </dd>
-                </div>
-
-                <div>
-                  <dt>
-                    Selling price
-                  </dt>
-
-                  <dd>
-                    {scannedItem.sellingPrice
-                      ? formatCurrency(
-                          Number(
-                            scannedItem.sellingPrice,
-                          ),
-                        )
-                      : "—"}
-                  </dd>
-                </div>
-
-                {scannedItem.notes && (
-                  <div>
-                    <dt>Notes</dt>
-
-                    <dd>
-                      {
-                        scannedItem.notes
-                      }
-                    </dd>
-                  </div>
-                )}
-              </dl>
-
-              <div className="scanner-result-actions">
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={
-                    closeScanResult
-                  }
-                >
-                  Close
-                </button>
-
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={
-                    editScannedItem
-                  }
-                >
-                  Edit Item
-                </button>
-              </div>
-            </section>
-          </div>
-        )}
       </section>
     </main>
   );

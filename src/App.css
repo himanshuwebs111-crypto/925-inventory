@@ -478,7 +478,229 @@ button:disabled {
   flex: 1;
   min-width: 90px;
 }
+/* =========================================================
+   Dashboard
+   ========================================================= */
 
+.dashboard-card {
+  min-height: 100%;
+}
+
+.dashboard-header {
+  margin-bottom: 32px;
+}
+
+.dashboard-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    5,
+    minmax(0, 1fr)
+  );
+  gap: 16px;
+  margin-bottom: 40px;
+}
+
+.dashboard-summary-card {
+  border: 1px solid #e2dfda;
+  border-radius: 14px;
+  padding: 22px;
+  background: #faf9f7;
+}
+
+.dashboard-summary-card p {
+  margin: 0 0 10px;
+  color: #77736d;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.dashboard-summary-card strong {
+  display: block;
+  color: #252525;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.dashboard-section {
+  margin-top: 38px;
+}
+
+.dashboard-section-header {
+  margin-bottom: 18px;
+}
+
+.dashboard-section-header h2 {
+  margin: 0;
+  color: #252525;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.category-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    3,
+    minmax(0, 1fr)
+  );
+  gap: 16px;
+}
+
+.category-dashboard-card {
+  border: 1px solid #e2dfda;
+  border-radius: 14px;
+  padding: 22px;
+  background: #ffffff;
+}
+
+.category-dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.category-dashboard-header h3 {
+  margin: 0;
+  color: #252525;
+  font-size: 18px;
+}
+
+.category-dashboard-header span {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #eeeeec;
+  color: #66615b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.category-dashboard-card strong {
+  display: block;
+  color: #8a6d46;
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.category-dashboard-card p {
+  margin: 6px 0 0;
+  color: #77736d;
+  font-size: 13px;
+}
+
+.dashboard-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border: 1px solid #e2dfda;
+  border-radius: 14px;
+  padding: 24px;
+  background: #ffffff;
+}
+
+.chart-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.chart-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chart-label span {
+  color: #403d39;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chart-label strong {
+  color: #8a6d46;
+  font-size: 14px;
+}
+
+.chart-track {
+  height: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eeeeec;
+}
+
+.chart-bar {
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: #8a6d46;
+  transition: width 0.3s ease;
+}
+
+.dashboard-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 40px;
+  border: 1px solid #e2dfda;
+  border-radius: 14px;
+  padding: 24px;
+  background: #faf9f7;
+}
+
+.dashboard-footer h2 {
+  margin: 0;
+  color: #252525;
+  font-size: 20px;
+}
+
+.dashboard-footer p:last-child {
+  margin: 8px 0 0;
+  color: #77736d;
+  line-height: 1.5;
+}
+
+@media (max-width: 1100px) {
+  .dashboard-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 800px) {
+  .dashboard-summary-grid,
+  .category-dashboard-grid {
+    grid-template-columns: repeat(
+      2,
+      minmax(0, 1fr)
+    );
+  }
+
+  .dashboard-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 560px) {
+  .dashboard-summary-grid,
+  .category-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .dashboard-chart {
+    padding: 18px;
+  }
+}
 /* =========================================================
    Product Images
    ========================================================= */
@@ -487,6 +709,7 @@ button:disabled {
   width: 100%;
   height: 220px;
   margin-bottom: 22px;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
   border: 1px solid #e3ded8;
   border-radius: 12px;
@@ -1227,4 +1450,249 @@ button:disabled {
   font-family: monospace;
   font-size: 13px;
   letter-spacing: 1px;
+}
+
+/* =========================================================
+   Excel Menu
+   ========================================================= */
+
+.excel-menu {
+  position: relative;
+}
+
+.excel-menu summary {
+  list-style: none;
+}
+
+.excel-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.excel-menu-trigger {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 10px;
+  padding: 13px 16px 11px;
+  background: #eeeeec;
+  color: #303030;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.excel-menu-trigger:hover {
+  background: #e4e2df;
+}
+
+.excel-menu[open] .excel-menu-trigger {
+  border-bottom-color: #8a6d46;
+  background: #e4e2df;
+  color: #8a6d46;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 5%);
+}
+
+.excel-menu-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 800;
+  width: 270px;
+  overflow: hidden;
+  border: 1px solid #dedbd6;
+  border-radius: 14px;
+  padding: 7px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 12%);
+}
+
+.excel-menu-item {
+  display: flex;
+  width: 100%;
+  min-height: 62px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 10px;
+  padding: 12px 13px;
+  background: transparent;
+  color: #252525;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+
+.excel-menu-item:hover {
+  background: #f7f5f2;
+}
+
+.excel-menu-item:active {
+  transform: translateY(1px);
+}
+
+.excel-menu-item:disabled {
+  cursor: not-allowed;
+}
+
+.excel-menu-item-icon {
+  display: none !important;
+}
+
+.excel-menu-item-content {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.excel-menu-item-content strong {
+  color: #252525;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.excel-menu-item-content span {
+  color: #777777;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.dashboard-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dashboard-scan-button {
+  border: 1px solid #d8d5d0;
+  background: #ffffff;
+}
+
+.dashboard-scan-button:hover {
+  background: #f7f5f2;
+}
+
+.dashboard-scan-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 24px;
+  border: 1px solid #e5c7c1;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #fff8f6;
+  color: #8b3d32;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.dashboard-scan-error p {
+  margin: 0;
+}
+
+.dashboard-scan-error .close-button {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.bulk-delete-button {
+  min-width: 150px;
+  min-height: 48px;
+  border: 1px solid #e5c7c1;
+}
+
+.bulk-delete-button:hover {
+  background: #ffe5e1;
+}
+
+@media (max-width: 760px) {
+  .dashboard-actions {
+    width: 100%;
+  }
+
+  .dashboard-actions .excel-menu,
+  .dashboard-actions button {
+    flex: 1;
+  }
+
+  .excel-menu-trigger {
+    width: 100%;
+  }
+
+  .excel-menu-panel {
+    left: 0;
+    right: auto;
+    width: min(270px, 100%);
+  }
+}
+
+@media (max-width: 600px) {
+  .excel-menu {
+    width: 100%;
+  }
+
+  .excel-menu-trigger {
+    width: 100%;
+  }
+
+  .excel-menu-panel {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  .bulk-delete-button {
+    width: 100%;
+  }
+}
+
+/* =========================================================
+   Inventory Category Creator
+   ========================================================= */
+
+.category-filter-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.category-filter-label label {
+  margin: 0;
+}
+
+.add-category-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #8a6d46;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.add-category-button:hover {
+  color: #6f5737;
+  text-decoration: underline;
+}
+
+.add-category-button:focus-visible {
+  outline: 2px solid #8a6d46;
+  outline-offset: 3px;
+  border-radius: 4px;
 }
